@@ -1,0 +1,93 @@
+# Power dialer list-prep configuration
+# Stack: VICIdial (self-hosted) + Telnyx elastic SIP trunk
+
+campaign:
+  name: TIKTOKSHOP
+  # VICIdial list IDs. Create these in VICIdial admin BEFORE loading.
+  # With --split-agents N the direct list occupies list_id_direct .. +N-1
+  # (101-105 for 5 seats), so toll-free sits in its own range to avoid collision.
+  list_id_direct: 101      # direct-dial numbers -> one list per agent seat
+  list_id_tollfree: 200    # switchboard/toll-free -> gatekeeper campaign, separate script
+  source_id: leadauto      # provenance tag, shows in VICIdial reporting
+
+regions:
+  # US/CA only. Anything else is rejected with reason=out_of_region.
+  allowed: [US, CA]
+
+# Enforced by VICIdial's per-campaign "Local Call Time" using the lead's
+# gmt_offset_now. Listed here so prep-time reporting matches dial-time reality.
+calling_hours:
+  US:
+    weekday: ["08:00", "21:00"]   # federal TCPA floor, recipient local time
+    weekend: ["08:00", "21:00"]
+  CA:
+    weekday: ["09:00", "21:30"]   # CRTC Unsolicited Telecom Rules
+    weekend: ["10:00", "18:00"]   # tighter than US - do not copy the weekday window
+
+retry:
+  max_attempts: 5
+  min_hours_between: 24
+  # Rotate time-of-day across attempts so a Tue 9am no-answer retries Thu 3pm,
+  # not Tue 9:15am. Same-day redialing is the classic spam-label trigger.
+  rotate_time_of_day: true
+  recall_suppression_days: 30     # do not reload a lead dialed within N days
+
+numbers:
+  max_dials_per_number_per_day: 150
+  warmup_days: 21
+  warmup_start_dials: 30
+
+# Weighted priority score -> VICIdial `rank`. Campaign dials DOWN RANK,
+# so the warmest leads get called in the first hour of the day.
+#
+# Only features that actually VARY across the list are weighted. Deliberately
+# excluded: has_email (100% coverage on this list), direct_dial (already encoded
+# by the direct/toll-free list split). A weight everyone earns is a constant, and
+# a constant added to every lead ranks nothing - it just compresses the spread.
+scoring:
+  # Raw scores are converted to a 0-99 percentile rank within each load, so the
+  # queue is always well spread regardless of how any single list is distributed.
+  normalize_to_percentile: true
+  max_rank: 100
+
+  tiktok_present: 25
+  tiktok_followers:            # mid-tier = investing in TikTok, not yet monetising Shop
+    "0": 0
+    "1": 8                     # <1k    - trying, struggling, needs help
+    "1000": 18                 # 1k-10k
+    "10000": 30                # 10k-100k - best fit
+    "100000": 22               # 100k-1M
+    "1000000": 8               # >1M    - already has an agency
+  company_size_fit:            # employee count; can afford us, has no in-house team
+    "0": 0                     # unknown
+    "1": 4                     # 1-4     micro, budget risk
+    "5": 12                    # 5-24
+    "25": 15                   # 25-99   best fit
+    "100": 10                  # 100-249
+    "250": 4                   # 250-999
+    "1000": 0                  # 1000+   has an agency or in-house team
+  title_seniority:
+    founder: 15                # founder|owner|co-founder|ceo|president
+    exec: 12                   # cmo|cro|vp|head of|director
+    manager: 7                 # ecommerce|marketing|growth|social manager
+    other: 0
+  instagram_no_tiktok: 8       # already does social, missing the channel we sell
+  engaged: 40                  # opened/replied to the email sequence - highest signal
+
+suppression:
+  dnc_file: dnc.csv                  # internal do-not-call, checked at prep AND dial time
+  called_log: cache/called_log.csv   # dialed-recently suppression
+  # Optional: CSV/JSON of emails or domains that engaged with the email sequence.
+  # Export from PlusVibe. Leave null until available.
+  engagement_file: null
+
+compliance:
+  # Played at the top of EVERY call. One policy, always compliant, costs 3 seconds.
+  # Avoids per-state all-party-consent analysis (CA/FL/IL/MD/MA/MI/MT/NV/NH/OR/PA/WA/CT/DE).
+  recording_disclosure: >-
+    This call is being recorded for quality and training purposes.
+  # CRTC requires clear identification at call start for Canadian numbers.
+  identify_company_on_connect: true
+  opt_out_honored_within_days: 10    # FCC revocation rule: 10 business days (US)
+  ca_opt_out_honored_within_days: 14 # CRTC internal DNC
+  log_retention_years: 5

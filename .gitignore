@@ -1,0 +1,13 @@
+# Credentials — never commit
+.env
+
+# Operational data — lives in SQLite on the deploy volume, not in git
+dialer.db*
+out/
+cache/
+uploads/
+dnc.csv
+
+__pycache__/
+*.pyc
+.DS_Store

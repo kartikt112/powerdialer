@@ -1,0 +1,7 @@
+.env
+dialer.db*
+out/
+cache/
+uploads/
+__pycache__/
+.git/
