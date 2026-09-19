@@ -115,6 +115,21 @@ class EndToEnd(unittest.TestCase):
                          [("Dale", "Owner", "Dayton", "OH", "accepted")])
         self.assertEqual(sorted(r["reason"].split(":")[0] for r in rejected), ["duplicate_company", "too_large"])
 
+    def test_national_dnc_scrub_rejects_at_prep(self):
+        listprep.NATIONAL_DNC.clear()
+        listprep.NATIONAL_DNC.add("+19372040101")
+        try:
+            (direct, _, rejected, _), _ = self.run_prep(["company", "phone", "state"], [["Harlan Machining", "937-204-0101", "OH"]])
+        finally:
+            listprep.NATIONAL_DNC.clear()
+        self.assertEqual((direct, [r["reason"] for r in rejected]), ([], ["national_dnc"]))
+
+    def test_a_lead_with_only_a_mobile_is_flagged(self):
+        (direct, _, _, _), _ = self.run_prep(["company", "mobile", "state"], [["Harlan Machining", "937-204-0101", "OH"]])
+        self.assertEqual((direct[0]["is_mobile"], direct[0]["_e164"]), ("1", "+19372040101"))
+        (direct, _, _, _), _ = self.run_prep(["company", "phone", "line_type"], [["Keystone Stamping", "814-204-0102", "mobile"]])
+        self.assertEqual(direct[0]["is_mobile"], "1")
+
     def test_dialer_csv_round_trips_into_the_database(self):
         import tempfile
         sys.path.insert(0, os.path.join(ROOT, "dialer"))

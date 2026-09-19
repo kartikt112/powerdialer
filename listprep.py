@@ -383,6 +383,9 @@ def _group_by_score(ordered_rows):
         yield current, size
 
 
+NATIONAL_DNC = set()        # filled by load_suppression from compliance.dnc_scrub_file
+
+
 def load_suppression(cfg):
     """Internal DNC (E.164) + recently-dialed numbers. Both checked before export."""
     dnc = set()
@@ -406,6 +409,16 @@ def load_suppression(cfg):
                     continue
                 if when > cutoff:
                     recent.add(clean(record.get("phone_e164")))
+
+    scrub_path = (cfg.get("compliance") or {}).get("dnc_scrub_file")
+    if scrub_path:
+        scrub_path = scrub_path if os.path.isabs(scrub_path) else os.path.join(HERE, scrub_path)
+        if os.path.exists(scrub_path):
+            sys.path.insert(0, os.path.join(HERE, "dialer"))
+            import policy
+            NATIONAL_DNC.update(policy.load_number_file(scrub_path))
+        else:
+            print(f"  WARNING: compliance.dnc_scrub_file not found: {scrub_path}")
 
     engaged = set()
     eng_path = cfg["suppression"].get("engagement_file")
@@ -488,6 +501,9 @@ def process(input_path, cfg, args):
             continue
         if e164 in dnc:
             reject("internal_dnc")
+            continue
+        if e164 in NATIONAL_DNC:
+            reject("national_dnc")
             continue
         if e164 in recent:
             reject("called_recently")

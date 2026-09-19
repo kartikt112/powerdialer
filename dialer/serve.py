@@ -943,6 +943,13 @@ def ensure_deps():
              "(or: python3.12 -m pip install -r requirements.txt)")
 
 
+def configure_policy_from(raw, enforce):
+    db.configure_policy(windows=DIALER.get("windows"), retry=raw.get("retry"), numbers=raw.get("numbers"),
+                        pool=(raw.get("numbers") or {}).get("pool"), enforce_windows=enforce,
+                        allow_mobile=bool((raw.get("compliance") or {}).get("allow_mobile")),
+                        scrub_file=(raw.get("compliance") or {}).get("dnc_scrub_file"))
+
+
 def main():
     ensure_deps()
     load_dotenv()
@@ -973,9 +980,10 @@ def main():
     simulator = not twilio_token("probe")
     enforce = (not simulator) or args.strict_windows or os.environ.get("STRICT_WINDOWS") == "1"
     db.FALLBACK_CALLER_ID = "+" + re.sub(r"\D", "", args.caller_id)
-    db.configure_policy(windows=DIALER.get("windows"), retry=raw.get("retry"), numbers=raw.get("numbers"),
-                        pool=(raw.get("numbers") or {}).get("pool"), enforce_windows=enforce,
-                        allow_mobile=bool((raw.get("compliance") or {}).get("allow_mobile")))
+    try:
+        configure_policy_from(raw, enforce)
+    except ValueError as e:
+        sys.exit(f"config.yaml dialer.windows refused: {e}")
 
     if args.list_id:
         path = newest_list_file(args.list_id)
@@ -1001,6 +1009,9 @@ def main():
         print(f"  caller ID {n['number']}  {n['used_today']}/{n['cap']} today"
               + (f"  warm-up day {n['warmup_day']}/{n['warmup_days']}" if n["warming"] else "")
               + ("  PARKED" if n["parked"] else ""))
+    scrub = (raw.get("compliance") or {}).get("dnc_scrub_file")
+    print(f"  dnc       internal list + " + (f"scrub file {scrub} ({len(db.scrub_numbers())} numbers)" if scrub else "no national scrub file")
+          + f"; mobiles {'ALLOWED' if db.ALLOW_MOBILE else 'blocked'}")
     print(f"  carrier   {'twilio credentials found: real calls' if not simulator else 'not configured: simulator mode (see TWILIO.md)'}")
     print(f"  auth      {'basic auth on' if os.environ.get('DIALER_PASSWORD') else 'OFF: local use only'}")
     print(f"  serving   {args.host}:{args.port}\n")

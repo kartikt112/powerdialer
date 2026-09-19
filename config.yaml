@@ -123,6 +123,19 @@ compliance:
   ca_opt_out_honored_within_days: 14 # CRTC internal DNC
   log_retention_years: 5
 
+  # National DNC scrub. Path to a file of numbers you may not call: one per
+  # line, or a CSV with a phone column, any format. Checked at list prep
+  # (reject reason `national_dnc`) AND again at dial time, so a list prepped
+  # before the latest scrub file still cannot slip a number through. A hit at
+  # dial time moves the lead to the internal do-not-call list. null = off.
+  dnc_scrub_file: null
+
+  # Calls to a number flagged as a mobile (line_type = mobile from the Telnyx
+  # lookup or the list, or a lead whose only number was its mobile) are
+  # blocked at dial time. Autodialed or prerecorded calls to mobiles need
+  # prior consent under the TCPA. Turn on only with counsel's say-so.
+  allow_mobile: false
+
 # ---------------------------------------------------------------------------
 # Browser dialer (dialer/serve.py + dialer/app.js). Everything below is read
 # at server start and handed to the agent screen via /api/config: edit here,

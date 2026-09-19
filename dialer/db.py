@@ -64,9 +64,35 @@ def configure(outcomes, stats_tz=None, objection_labels=None):
     CONNECTED = {o["key"] for o in outcomes if o.get("connect")}
 
 
-def configure_policy(windows=None, retry=None, numbers=None, pool=None, enforce_windows=True, allow_mobile=False):
-    global WINDOWS, RETRY, NUMBERS, POOL, ENFORCE_WINDOWS, ALLOW_MOBILE, MAX_ATTEMPTS, DAILY_CAP
-    WINDOWS = dict(policy.DEFAULT_WINDOWS, **(windows or {}))
+SCRUB_FILE = None
+_scrub = {"mtime": None, "numbers": set()}
+
+
+def scrub_numbers():
+    """The national DNC scrub set, reloaded whenever the file changes."""
+    if not SCRUB_FILE or not os.path.exists(SCRUB_FILE):
+        return set()
+    mtime = os.path.getmtime(SCRUB_FILE)
+    if mtime != _scrub["mtime"]:
+        _scrub["numbers"], _scrub["mtime"] = policy.load_number_file(SCRUB_FILE), mtime
+    return _scrub["numbers"]
+
+
+def _scrubbed(con, lead):
+    """True when this lead is on the scrub list; it is closed out on the spot."""
+    if lead["phone"] not in scrub_numbers():
+        return False
+    con.execute("INSERT OR REPLACE INTO dnc VALUES (?,?,?,?)", (lead["phone"], "national_dnc", iso(now()), "scrub"))
+    con.execute("UPDATE leads SET status='DNC', last_disposition='DNC', checked_out_by=NULL WHERE phone=?", (lead["phone"],))
+    return True
+
+
+def configure_policy(windows=None, retry=None, numbers=None, pool=None, enforce_windows=True, allow_mobile=False,
+                     scrub_file=None):
+    global WINDOWS, RETRY, NUMBERS, POOL, ENFORCE_WINDOWS, ALLOW_MOBILE, MAX_ATTEMPTS, DAILY_CAP, SCRUB_FILE
+    SCRUB_FILE = (scrub_file if os.path.isabs(scrub_file) else os.path.join(ROOT, scrub_file)) if scrub_file else None
+    _scrub["mtime"] = None
+    WINDOWS = policy.check_windows(dict(policy.DEFAULT_WINDOWS, **(windows or {})))
     RETRY = dict(policy.DEFAULT_RETRY, **{k: v for k, v in (retry or {}).items() if k in policy.DEFAULT_RETRY})
     NUMBERS = dict(policy.DEFAULT_NUMBERS, **{k: v for k, v in (numbers or {}).items() if k in policy.DEFAULT_NUMBERS})
     POOL = []
@@ -607,6 +633,9 @@ def checkout(agent):
                 return None, "Every lead left was already tried today, or is waiting for its next morning or afternoon slot."
             return None, "Queue is empty. Load a new list or wait for retries to come due."
 
+        if _scrubbed(con, pick):
+            con.commit()
+            return checkout(agent)       # closed out as national DNC; take the next one
         lead, why_not = _with_caller_id(con, pick)
         if lead is None:
             return None, why_not
@@ -804,6 +833,11 @@ def checkout_specific(phone, agent, tz_offset=None, tz_name="", returning=False)
     with connect() as con:
         if con.execute("SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone():
             return None, "That number is on the do-not-call list."
+        if phone in scrub_numbers():
+            existing = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
+            if existing is not None:
+                _scrubbed(con, existing)
+            return None, "That number is on the national do-not-call scrub list."
 
         row = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
         if row is None:

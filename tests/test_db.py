@@ -175,6 +175,35 @@ class Caps(Base):
         self.assertIsNotNone(db.checkout("pawan")[0])
 
 
+class NationalDnc(Base):
+    def test_scrub_list_is_checked_again_at_dial_time(self):
+        scrub = os.path.join(self.tmp, "national_dnc.txt")
+        with open(scrub, "w") as fh:
+            fh.write("937-204-0101\n")
+        db.configure_policy(pool=POOL, scrub_file=scrub)
+        self.lead("+19372040101", "Scrubbed Shop", "America/New_York", -4, rank=99)
+        self.lead("+19372040102", "Clean Shop", "America/New_York", -4, rank=10)
+        lead, _ = db.checkout("pawan")
+        self.assertEqual(lead["company"], "Clean Shop")                    # the better-ranked lead was skipped
+        self.assertEqual(self.row("+19372040101")["status"], "DNC")
+        self.assertTrue(db.is_dnc("+19372040101"))
+        self.assertIn("do-not-call", db.checkout_specific("+19372040101", "pawan")[1])    # now on the internal list too
+        with open(scrub, "a") as fh:
+            fh.write("(937) 204-0177\n")
+        os.utime(scrub, (1, 2_000_000_000))
+        self.assertIn("national do-not-call", db.checkout_specific("+19372040177", "pawan")[1])  # typed by hand
+
+    def test_a_newer_scrub_file_is_picked_up_without_a_restart(self):
+        scrub = os.path.join(self.tmp, "national_dnc.txt")
+        open(scrub, "w").close()
+        db.configure_policy(pool=POOL, scrub_file=scrub)
+        self.assertEqual(db.scrub_numbers(), set())
+        with open(scrub, "w") as fh:
+            fh.write("9372040101\n")
+        os.utime(scrub, (1, 2_000_000_000))
+        self.assertEqual(db.scrub_numbers(), {"+19372040101"})
+
+
 class Undo(Base):
     def test_undo_restores_the_lead_exactly_and_drops_the_call(self):
         self.lead("+19372040101", "Ohio Shop", "America/New_York", -4, dm_name="Dale Harlan")

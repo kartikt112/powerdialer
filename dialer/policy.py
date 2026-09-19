@@ -30,6 +30,37 @@ DEFAULT_NUMBERS = {
 }
 
 
+TCPA_EARLIEST, TCPA_LATEST = 8.0, 21.0      # federal floor on the recipient's clock; not configurable
+
+
+def check_windows(windows):
+    """Refuse a config that reaches outside the TCPA hours. Returns the
+    windows unchanged or raises ValueError naming the offender."""
+    spans = [tuple(windows["hard"])] + [tuple(x) for t in ("power", "secondary") for x in (windows.get(t) or [])]
+    for lo, hi in spans:
+        if hhmm(lo) < TCPA_EARLIEST or hhmm(hi) > TCPA_LATEST or hhmm(lo) >= hhmm(hi):
+            raise ValueError(f"calling window {lo}-{hi} is outside 08:00-21:00 on the prospect's clock (TCPA) or is empty")
+    lo, hi = hhmm(windows["hard"][0]), hhmm(windows["hard"][1])
+    for tier_name in ("power", "secondary"):
+        for a, b in windows.get(tier_name) or []:
+            if hhmm(a) < lo or hhmm(b) > hi:
+                raise ValueError(f"{tier_name} window {a}-{b} reaches outside the hard limits {windows['hard'][0]}-{windows['hard'][1]}")
+    return windows
+
+
+def load_number_file(path):
+    """Numbers from a scrub file as a set of E.164 strings. One per line or a
+    CSV; every 10 or 11 digit run on a line is taken, so any export works."""
+    import re
+    out = set()
+    with open(path, encoding="utf-8-sig", errors="replace") as fh:
+        for line in fh:
+            for run in re.findall(r"(?<!\d)1?[\s.\-()]*[2-9]\d{2}[\s.\-()]*\d{3}[\s.\-]*\d{4}(?!\d)", line):
+                digits = re.sub(r"\D", "", run)
+                out.add("+1" + digits[-10:])
+    return out
+
+
 def hhmm(text):
     """'08:15' -> 8.25"""
     h, _, m = str(text).partition(":")
@@ -89,7 +120,6 @@ def next_open(local, windows=DEFAULT_WINDOWS):
     return None
 
 
-ZONE_LABELS = {-4: "ET", -5: "ET", -6: "CT", -7: "MT", -8: "PT", -9: "AKT", -10: "HT"}
 ZONE_BY_NAME = {"America/New_York": "ET", "America/Detroit": "ET", "America/Indiana/Indianapolis": "ET",
                 "America/Kentucky/Louisville": "ET", "America/Toronto": "ET",
                 "America/Chicago": "CT", "America/Winnipeg": "CT", "America/Menominee": "CT",

@@ -159,6 +159,24 @@ class CallerId(unittest.TestCase):
         self.assertEqual(policy.spoken("+19893751429"), "989, 375, 1429")
 
 
+class Compliance(unittest.TestCase):
+    def test_windows_can_never_reach_outside_tcpa_hours(self):
+        ok = dict(policy.DEFAULT_WINDOWS)
+        self.assertEqual(policy.check_windows(ok), ok)
+        for bad in ({"hard": ["07:30", "18:00"]}, {"hard": ["08:00", "21:30"]},
+                    {"power": [["07:45", "10:15"]]}, {"secondary": [["17:00", "19:00"]]}, {"hard": ["18:00", "08:00"]}):
+            with self.assertRaises(ValueError):
+                policy.check_windows(dict(ok, **bad))
+
+    def test_scrub_file_takes_any_format(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as fh:
+            fh.write("phone,name\n(937) 204-0101,x\n1-814-204-0102,y\n+12532040103\n9375550199\nnot a number 12345\n")
+        got = policy.load_number_file(fh.name)
+        os.unlink(fh.name)
+        self.assertEqual(got, {"+19372040101", "+18142040102", "+12532040103", "+19375550199"})
+
+
 class Session(unittest.TestCase):
     def test_time_and_a_half_eta(self):
         self.assertEqual(policy.eta_seconds(60, 1800, 40), int(60 * 45 * 1.5))     # 45s a dial so far
