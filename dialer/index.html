@@ -37,10 +37,10 @@
 
   <div class="kpis" aria-label="Today">
     <div class="kpi"><span class="eyebrow">Dials</span><b id="k-dials">0<small>/ 150</small></b><span class="goal" title="Daily goal"><i id="k-goal"></i></span></div>
-    <div class="kpi"><span class="eyebrow">Connects</span><b id="k-conn">0<small>—</small></b></div>
+    <div class="kpi"><span class="eyebrow">Connects</span><b id="k-conn">0<small>-</small></b></div>
     <div class="kpi opt2"><span class="eyebrow">Interested</span><b id="k-int">0</b></div>
     <div class="kpi opt"><span class="eyebrow">Talk time</span><b id="k-talk">0:00</b></div>
-    <div class="kpi opt"><span class="eyebrow">Pace</span><b id="k-pace">—<small>/hr</small></b></div>
+    <div class="kpi opt"><span class="eyebrow">Pace</span><b id="k-pace">-<small>/hr</small></b></div>
     <button class="kpi kpi-btn opt2" id="k-cb-btn" title="Open callbacks"><span class="eyebrow">Callbacks</span><b id="k-cb">0<small>due</small></b></button>
   </div>
 
@@ -208,7 +208,7 @@
         <span class="pill warn" id="quality" hidden><span data-ic="signal" data-cls="sm"></span><span id="quality-t">Poor connection</span></span>
         <span class="pill danger rec" id="rec" hidden><i></i>REC</span>
         <span class="pill" id="mode-pill" hidden></span>
-        <span class="cid">Calling from<b id="cid">—</b></span>
+        <span class="cid">Calling from<b id="cid">-</b></span>
       </div>
 
       <div class="keypad-pop" id="keypad" hidden>
@@ -236,6 +236,6 @@
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
-<script src="app.js"></script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>

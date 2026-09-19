@@ -498,8 +498,8 @@ def write_report(path, direct, tollfree, rejected, total, cfg, input_path):
         "|---|---|",
         f"| Input rows | {total} |",
         f"| Rejected | {len(rejected)} |",
-        f"| **Dialable — direct** | **{len(direct)}** |",
-        f"| Dialable — toll-free/switchboard | {len(tollfree)} |",
+        f"| **Dialable: direct** | **{len(direct)}** |",
+        f"| Dialable: toll-free/switchboard | {len(tollfree)} |",
         f"| Same-company duplicates (kept, flagged) | {company_dupes} |",
         f"| Engaged w/ email sequence | {engaged} |",
         "",
@@ -512,7 +512,7 @@ def write_report(path, direct, tollfree, rejected, total, cfg, input_path):
 
     lines += [
         "",
-        "## Top area codes — buy your DIDs here",
+        "## Top area codes: buy your DIDs here",
         "",
         "| NPA | Leads | % of direct |",
         "|---|---|---|",
@@ -520,7 +520,7 @@ def write_report(path, direct, tollfree, rejected, total, cfg, input_path):
     for npa, count in npa_counts.most_common(12):
         lines.append(f"| {npa} | {count} | {count / max(len(direct), 1) * 100:.1f}% |")
 
-    lines += ["", "## Timezone distribution — staff your shifts here", "",
+    lines += ["", "## Timezone distribution: staff your shifts here", "",
               "| Timezone | Leads |", "|---|---|"]
     for tz_name, count in tz_counts.most_common():
         lines.append(f"| {tz_name} | {count} |")

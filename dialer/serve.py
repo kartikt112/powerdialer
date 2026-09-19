@@ -47,7 +47,7 @@ DATA_DIR = os.environ.get("DATA_DIR")
 CONFIG = {"caller_id": "+1 917 555 0142"}
 
 VM_DROP_TEXT = os.environ.get("VM_DROP_TEXT",
-    "Hi, this is Sayim. Sorry I missed you — I was calling about your brand's "
+    "Hi, this is Sayim. Sorry I missed you: I was calling about your brand's "
     "TikTok Shop. You can reach me back on this number, or I'll try you again "
     "soon. Thanks, bye!")
 
@@ -61,7 +61,7 @@ DIALER_DEFAULTS = {
     "daily_goal": 100,
     "autodial_delay_sec": 3,
     "recording": False,          # true only if the /dial Function records
-    "agents": [],                # [{id: agent1, name: Sayim}] — empty = free text
+    "agents": [],                # [{id: agent1, name: Sayim}]: empty = free text
     "pause_reasons": ["Break", "Lunch", "Meeting", "Admin / follow-ups", "Coaching"],
     # kind: final | retry | callback | dnc.  connect: a human picked up.
     # INTERESTED, CALLBACK and DNC are load-bearing keys; the rest are yours.
@@ -82,33 +82,33 @@ DIALER_DEFAULTS = {
     # {!followers}…{/followers} only when it does not. **bold** works.
     "scripts": {
         "opener": (
-            "Hi {first}, it's {agent} — I'll be quick. I saw **{company}**"
+            "Hi {first}, it's {agent}: I'll be quick. I saw **{company}**"
             "{?followers} has {followers} followers on TikTok but isn't running Shop against them yet."
             "{/followers}{!followers} isn't running TikTok Shop yet.{/followers}"
             " That's what we do, end to end, for brands your size. Worth two minutes?"),
         "voicemail": (
             "Hi {first}, this is {agent}. I was calling about **{company}**'s TikTok Shop"
-            "{?followers} — you've got {followers} followers and no Shop running against them{/followers}."
+            "{?followers}: you've got {followers} followers and no Shop running against them{/followers}."
             " I'll try you again, or you can reach me back on this number. Thanks!"),
         "gatekeeper": (
-            "Hi, it's {agent} — could you put me through to {first}? "
+            "Hi, it's {agent}: could you put me through to {first}? "
             "It's about **{company}**'s TikTok channel. "
             "If they're out: when's a good time to catch them, and is there a direct line?"),
         "objections": [
             {"q": "We already have an agency",
              "a": "Makes sense. Are they running TikTok Shop specifically, or mostly paid and organic? "
-                  "Most agencies we meet don't touch Shop — we sit alongside them."},
+                  "Most agencies we meet don't touch Shop: we sit alongside them."},
             {"q": "Not interested",
-             "a": "Fair enough. Quick one before I go — is it that Shop isn't a priority this year, "
+             "a": "Fair enough. Quick one before I go: is it that Shop isn't a priority this year, "
                   "or that you've looked at it and it didn't stack up?"},
             {"q": "Send me an email",
-             "a": "Happy to. So I send the right thing — is the bigger question whether Shop would work "
+             "a": "Happy to. So I send the right thing: is the bigger question whether Shop would work "
                   "for your products, or who would run it day to day?"},
             {"q": "How much does it cost?",
-             "a": "Depends on catalogue size — most brands your size start on a performance-weighted "
+             "a": "Depends on catalogue size: most brands your size start on a performance-weighted "
                   "retainer. Worth fifteen minutes to scope it properly?"},
             {"q": "Bad time",
-             "a": "No problem — when's better, later today or tomorrow morning? I'll put it in."},
+             "a": "No problem: when's better, later today or tomorrow morning? I'll put it in."},
         ],
     },
 }
@@ -124,7 +124,7 @@ def load_dialer_config():
             raw = yaml.safe_load(fh) or {}
     except ImportError:
         raw = {}
-        print("  config    PyYAML not installed — using built-in dialer defaults")
+        print("  config    PyYAML not installed: using built-in dialer defaults")
     except OSError:
         raw = {}
     user = raw.get("dialer") or {}
@@ -194,7 +194,7 @@ def load_dotenv():
 # ---------------------------------------------------------------- twilio --
 
 def twilio_token(identity):
-    """Voice access token — plain HS256 JWT, no SDK dependency. None when
+    """Voice access token: plain HS256 JWT, no SDK dependency. None when
     the TWILIO_* env is incomplete (the UI's simulator-mode signal)."""
     account = os.environ.get("TWILIO_ACCOUNT_SID")
     key = os.environ.get("TWILIO_API_KEY_SID")
@@ -436,7 +436,6 @@ def lead_payload(lead):
 
 STATIC = {
     "/twilio.min.js": "application/javascript",
-    "/app.js": "application/javascript; charset=utf-8",
     "/app.css": "text/css; charset=utf-8",
 }
 
@@ -469,7 +468,7 @@ class Handler(BaseHTTPRequestHandler):
         if hmac.compare_digest(cookies.get("dialer_auth", ""), expected):
             return True
 
-        # Login link: /?key=<password> sets the cookie — friendlier than the
+        # Login link: /?key=<password> sets the cookie: friendlier than the
         # browser's native basic-auth prompt for agents on shared machines.
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         if hmac.compare_digest((q.get("key") or [""])[0], password):
@@ -520,6 +519,13 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(HERE, route.lstrip("/")), "rb") as fh:
                 return self._send(200, fh.read(), STATIC[route])
 
+        if re.fullmatch(r"/js/[a-z_]+\.js", route):       # cockpit ES modules
+            path = os.path.join(HERE, route.lstrip("/"))
+            if os.path.exists(path):
+                with open(path, "rb") as fh:
+                    return self._send(200, fh.read(), "application/javascript; charset=utf-8")
+            return self._json({"error": "not found"}, 404)
+
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
         if route == "/api/config":
@@ -527,7 +533,8 @@ class Handler(BaseHTTPRequestHandler):
                                    live=bool(twilio_token("probe")),
                                    windows={"weekday": db.WINDOW_WEEKDAY,
                                             "weekend": db.WINDOW_WEEKEND,
-                                            "callback": db.CALLBACK_WINDOW},
+                                            "hard": db.CALLBACK_WINDOW,
+                                            "enforced": True, "weekdays_only": False},
                                    max_attempts=db.MAX_ATTEMPTS,
                                    retry_hours=db.RETRY_HOURS))
 
@@ -715,7 +722,27 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def ensure_deps():
+    """config.yaml holds the whole script tree, so PyYAML is required. A system
+    Python without it hops into ROOT/.venv when one exists, which keeps
+    `python3.12 dialer/serve.py` working on a Mac with a bare Homebrew Python."""
+    try:
+        import yaml  # noqa: F401
+        return
+    except ImportError:
+        pass
+    venv_python = os.path.join(ROOT, ".venv", "bin", "python")
+    inside = os.path.realpath(sys.prefix) == os.path.realpath(os.path.join(ROOT, ".venv"))
+    if os.path.exists(venv_python) and not inside and not os.environ.get("PD_NO_VENV_HOP"):
+        print("  deps      PyYAML missing here, re-running inside .venv")
+        os.environ["PD_NO_VENV_HOP"] = "1"
+        os.execv(venv_python, [venv_python] + sys.argv)
+    sys.exit("PyYAML is required. Run:  uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt\n"
+             "(or: python3.12 -m pip install -r requirements.txt)")
+
+
 def main():
+    ensure_deps()
     load_dotenv()
     global VM_DROP_TEXT
     VM_DROP_TEXT = os.environ.get("VM_DROP_TEXT", VM_DROP_TEXT)
@@ -730,7 +757,16 @@ def main():
     parser.add_argument("--caller-id",
                         default=os.environ.get("TWILIO_CALLER_ID", CONFIG["caller_id"]))
     parser.add_argument("--no-open", action="store_true")
+    parser.add_argument("--list", dest="list_id", metavar="ID",
+                        help="import the newest prepped list with this list id before serving")
     args = parser.parse_args()
+    if args.list_id:
+        path = newest_list_file(args.list_id)
+        if path:
+            added, refreshed = db.import_list_csv(path)
+            print(f"  list      {os.path.basename(path)}: +{added} new, {refreshed} refreshed")
+        else:
+            print(f"  list      no prepped file for list id {args.list_id} under out/ (run listprep.py first)")
     CONFIG["caller_id"] = args.caller_id
 
     s = db.stats()
@@ -739,8 +775,8 @@ def main():
           f"{s['callbacks_due']} callbacks due in 24h")
     print(f"  today     {s['dials_today']}/{s['cap']} dials")
     print(f"  caller ID {args.caller_id}")
-    print(f"  twilio    {'credentials found — real calls' if twilio_token('probe') else 'not configured — simulator mode (see TWILIO.md)'}")
-    print(f"  auth      {'basic auth on' if os.environ.get('DIALER_PASSWORD') else 'OFF — local use only'}")
+    print(f"  twilio    {'credentials found: real calls' if twilio_token('probe') else 'not configured: simulator mode (see TWILIO.md)'}")
+    print(f"  auth      {'basic auth on' if os.environ.get('DIALER_PASSWORD') else 'OFF: local use only'}")
     print(f"  serving   {args.host}:{args.port}\n")
 
     if not args.no_open and args.host in ("127.0.0.1", "localhost"):

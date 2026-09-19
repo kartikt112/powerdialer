@@ -6,7 +6,7 @@ agents never dial the same number, retry scheduling, callbacks, per-day dial
 caps computed from actual history, and notes.
 
 Policy constants mirror config.yaml (listprep reads the YAML; the dialer
-reads these) — change both or wire yaml here if they drift.
+reads these): change both or wire yaml here if they drift.
 """
 
 import csv
@@ -26,7 +26,7 @@ CHECKOUT_TTL_MIN = 10
 
 # Lead-local calling windows (hours). Weekday satisfies both the US TCPA
 # floor (8-21) and CRTC (9-21:30); weekend uses the tighter CRTC rule.
-# Override with e.g. WINDOW_WEEKDAY="9-20.5" — do not widen past 8-21.
+# Override with e.g. WINDOW_WEEKDAY="9-20.5": do not widen past 8-21.
 def _window(env, default):
     raw = os.environ.get(env)
     if raw and "-" in raw:
@@ -253,7 +253,7 @@ def checkout(agent):
             con.execute("UPDATE leads SET checked_out_at=? WHERE id=?", (iso(t), held["id"]))
             return dict(held), None
 
-        # Due callbacks first — they may stretch the normal window a little.
+        # Due callbacks first: they may stretch the normal window a little.
         rows = con.execute(
             """SELECT * FROM leads WHERE status='NEW' AND callback_at IS NOT NULL
                AND callback_at <= ? ORDER BY callback_at LIMIT 50""", (iso(t),)).fetchall()
@@ -272,7 +272,7 @@ def checkout(agent):
                               "calling window right now.")
 
         if pick is None:
-            return None, "Queue is empty — load a new list or wait for retries to come due."
+            return None, "Queue is empty: load a new list or wait for retries to come due."
 
         cur = con.execute(
             "UPDATE leads SET status='OUT', checked_out_by=?, checked_out_at=? "
@@ -381,7 +381,7 @@ def _drop_untouched_manual(con, phone):
 
 
 def skip(phone, agent):
-    """Back of the queue. Clears any callback timer — a skipped due-callback
+    """Back of the queue. Clears any callback timer: a skipped due-callback
     must not boomerang straight back to the top."""
     with connect() as con:
         if _drop_untouched_manual(con, phone):
@@ -510,7 +510,7 @@ def undo(dispo_id, agent):
         if d["agent"] != agent:
             return None, None, "Only the agent who saved it can undo it."
         if d["at"] < iso(t - timedelta(seconds=UNDO_WINDOW_SEC)):
-            return None, None, "Too late to undo — fix it from the lead's history instead."
+            return None, None, "Too late to undo: fix it from the lead's history instead."
         newest = con.execute(
             "SELECT id FROM dispositions WHERE phone=? ORDER BY at DESC, id DESC LIMIT 1",
             (d["phone"],)).fetchone()

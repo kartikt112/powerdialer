@@ -14,3 +14,5 @@ __pycache__/
 
 # Seeded demo database for local UI previews
 .preview/
+.venv/
+.gstack/

@@ -1,4 +1,4 @@
-/* Powerdialer agent cockpit — design system + layout.
+/* Powerdialer agent cockpit: design system + layout.
    Tokens first, then primitives, then regions (top bar, left rail, lead,
    call bar, right rail), then overlays. Colour carries call state: the
    --state token is re-pointed by body[data-state] and everything that
@@ -219,6 +219,7 @@ body[data-state="dialing"] .lamp i, body[data-state="live"] .lamp i { animation:
 .menu button:hover, .menu a:hover { background: var(--hover); text-decoration: none; }
 .menu button .ic, .menu a .ic { color: var(--text-3); }
 .menu button kbd { margin-left: auto; }
+kbd.onfill { background: rgba(255, 255, 255, .2); border-color: transparent; color: inherit; }
 .menu hr { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
 @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 
@@ -475,6 +476,7 @@ details.obj p { padding: 0 12px 12px; font-size: 14px; line-height: 1.6; color: 
           border-radius: 16px; box-shadow: var(--shadow); padding: 22px; display: flex; flex-direction: column; gap: 16px;
           animation: pop .2s var(--ease); }
 .dialog.wide { width: min(620px, 100%); }
+.dialog.xwide { width: min(980px, 100%); }
 .dialog h2 { font-size: 17px; font-weight: 650; letter-spacing: -.015em; }
 .dialog .sub { color: var(--text-2); font-size: 13.5px; margin-top: 4px; line-height: 1.5; }
 .dialog .dh { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
