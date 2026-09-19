@@ -445,16 +445,34 @@ def out_dirs():
     return dirs
 
 
+def _list_id_of(path):
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            import csv as _csv
+            row = next(_csv.DictReader(fh), None)
+            return str((row or {}).get("list_id") or "")
+    except OSError:
+        return ""
+
+
 def newest_list_file(list_id=None):
-    if list_id:
-        patterns = [f"vicidial_*_list{list_id}_*.csv"]
-    else:
-        patterns = ["vicidial_*_agent1_list*_*.csv", "vicidial_*_direct_*.csv"]
-    matches = []
+    """Newest prepped list. Prefers the dialer CSV (<campaign>_list_<date>.csv)
+    and falls back to VICIdial load files from before it existed."""
+    tag = (DIALER.get("campaign") or "ppap").lower()
+    found = []
     for d in out_dirs():
-        for p in patterns:
-            matches += glob.glob(os.path.join(d, p))
-    return max(matches, key=os.path.getmtime) if matches else None
+        found += glob.glob(os.path.join(d, f"{tag}_list_*.csv"))
+    found = [p for p in found if not list_id or _list_id_of(p) == str(list_id)]
+    if not found:
+        patterns = [f"vicidial_*_list{list_id}_*.csv"] if list_id else \
+            ["vicidial_*_agent1_list*_*.csv", "vicidial_*_direct_*.csv"]
+        for d in out_dirs():
+            for p in patterns:
+                found += glob.glob(os.path.join(d, p))
+        if list_id:
+            found += [p for d in out_dirs() for p in glob.glob(os.path.join(d, "vicidial_*_direct_*.csv"))
+                      if _list_id_of(p) == str(list_id)]
+    return max(found, key=os.path.getmtime) if found else None
 
 
 def migrate():
@@ -488,10 +506,11 @@ def run_listprep(src, outdir):
     tail = "\n".join((proc.stdout + "\n" + proc.stderr).strip().splitlines()[-12:])
     if proc.returncode != 0:
         return None, ("listprep failed", tail)
-    produced = glob.glob(os.path.join(outdir, "vicidial_*_direct_*.csv"))
+    tag = (DIALER.get("campaign") or "ppap").lower()
+    produced = glob.glob(os.path.join(outdir, f"{tag}_list_*.csv")) or glob.glob(os.path.join(outdir, "vicidial_*_direct_*.csv"))
     newest = max(produced, key=os.path.getmtime) if produced else None
     if not newest:
-        return None, ("prep produced no direct list", tail)
+        return None, ("prep produced no dialable list", tail)
     added, refreshed = db.import_list_csv(newest)
     return {"ok": True, "added": added, "refreshed": refreshed,
             "source": os.path.basename(newest), "log": tail}, None

@@ -1,9 +1,15 @@
 #!/usr/bin/env python3.12
 """
-List-prep pipeline: Excel/CSV -> VICIdial-ready lead files.
+List-prep pipeline: Excel/CSV -> a ranked, timezone-tagged PPAP call list.
 
-Excel -> normalize E.164 -> US/CA filter -> dedupe -> toll-free split
-      -> timezone -> DNC suppress -> priority score -> VICIdial CSV
+Excel/CSV -> column aliases (cold-call list shape, Sales Navigator exports)
+          -> normalize E.164 -> US/CA filter -> ITAR / size / DNC rejects
+          -> dedupe by number, then one best contact per company
+          -> toll-free split -> timezone (area code, then state)
+          -> priority score -> percentile rank
+          -> out/ppap_list_<date>.csv  (browser dialer)
+             out/prep_report.md        (counts per timezone and reject reason)
+             out/vicidial_*.csv        (VICIdial load files, unchanged path)
 
 Usage:
     python3.12 listprep.py --input ~/lead-automation/output/final_leads_master_20260421_1443.xlsx
@@ -66,22 +72,27 @@ STATE_TO_ABBR = {
 
 # Source column -> canonical name. Extend here when a new list shape shows up.
 COLUMN_ALIASES = {
-    "company": ["company name", "company", "brand name", "brand", "account name"],
+    "company": ["company name", "company", "brand name", "brand", "account name", "account", "current company",
+                "organization", "organization name"],
     "first_name": ["first name", "first_name", "firstname", "fname"],
     "last_name": ["last name", "last_name", "lastname", "lname"],
-    "email": ["email", "email address", "work email"],
-    "job_title": ["job title", "title", "position", "role"],
-    "website": ["website", "web site", "domain", "company website", "url"],
-    "phone": ["phone", "phone number", "telephone", "direct dial", "company phone", "work phone"],
+    "full_name": ["name", "full name", "full_name", "contact", "contact name", "lead name"],
+    "email": ["email", "email address", "work email", "business email"],
+    "job_title": ["job title", "title", "position", "role", "current title", "headline"],
+    "website": ["website", "web site", "domain", "company website", "company domain", "company url", "url"],
+    "phone": ["phone", "phone number", "telephone", "direct dial", "company phone", "work phone", "corporate phone",
+              "hq phone", "office phone"],
     "mobile": ["mobile", "mobile phone", "cell", "cell phone"],
     "city": ["city", "town"],
-    "state": ["state", "province", "region"],
+    "state": ["state", "province", "region", "company state", "state/region"],
+    "location": ["location", "geography", "person location", "company location", "lead location", "hq location"],
     "industry": ["industry", "vertical", "categories", "category"],
     "employees": ["employees", "employee count", "headcount", "company size", "company headcount",
                   "# employees", "number of employees"],
     "process": ["process", "processes", "capability", "capabilities", "primary process"],
     "oem": ["oem", "oems", "customers", "key customers", "supplies"],
-    "linkedin_url": ["linkedin", "linkedin url", "linkedin_url", "profile url", "person linkedin url"],
+    "linkedin_url": ["linkedin", "linkedin url", "linkedin_url", "profile url", "person linkedin url",
+                     "linkedin profile", "sales navigator url", "lead linkedin url"],
     "li_status": ["li_status", "li status", "linkedin status", "invite status", "connection status"],
     "source": ["source", "lead source", "list"],
     "dm_name": ["dm_name", "dm name", "decision maker", "decision maker name", "owner name"],
@@ -89,6 +100,66 @@ COLUMN_ALIASES = {
     "notes": ["notes", "note", "comments", "description", "about"],
     "line_type": ["line_type", "line type", "phone type"],
 }
+
+
+# Dominant IANA zone per state/province. Used when the area code gives no
+# answer, and to pick among several when an area code spans zones.
+STATE_TZ = {
+    **dict.fromkeys(["CT", "DE", "DC", "FL", "GA", "ME", "MD", "MA", "NH", "NJ", "NY", "NC", "OH", "PA", "RI", "SC",
+                     "VT", "VA", "WV", "ON", "QC"], "America/New_York"),
+    "MI": "America/Detroit", "IN": "America/Indiana/Indianapolis", "KY": "America/New_York",
+    **dict.fromkeys(["AL", "AR", "IL", "IA", "KS", "LA", "MN", "MS", "MO", "NE", "ND", "OK", "SD", "TN", "TX", "WI",
+                     "MB", "SK"], "America/Chicago"),
+    **dict.fromkeys(["CO", "MT", "NM", "UT", "WY", "ID", "AB"], "America/Denver"),
+    "AZ": "America/Phoenix",
+    **dict.fromkeys(["CA", "NV", "OR", "WA", "BC"], "America/Los_Angeles"),
+    "AK": "America/Anchorage", "HI": "Pacific/Honolulu", "PR": "America/Puerto_Rico",
+    **dict.fromkeys(["NB", "NS", "PE"], "America/Halifax"), "NL": "America/St_Johns",
+}
+
+
+def state_abbr(raw):
+    text = clean(raw)
+    return STATE_TO_ABBR.get(text.lower(), text.upper()[:2] if 0 < len(text) <= 3 else "")
+
+
+def split_location(raw):
+    """'Dayton, Ohio, United States' -> ('Dayton', 'OH'). Sales Navigator gives
+    one location string; 'Greater Chicago Area' style values yield nothing."""
+    parts = [p.strip() for p in clean(raw).split(",") if p.strip()]
+    for i, part in enumerate(parts):
+        abbr = STATE_TO_ABBR.get(part.lower()) or (part.upper() if part.upper() in STATE_TZ and len(part) == 2 else "")
+        if abbr:
+            return (parts[i - 1] if i > 0 else ""), abbr
+    return "", ""
+
+
+def offset_for(tz_name):
+    try:
+        offset = ZoneInfo(tz_name).utcoffset(datetime.now(dt_timezone.utc))
+        return round(offset.total_seconds() / 3600, 2)
+    except Exception:
+        return None
+
+
+def lead_timezone(e164, state):
+    """(zone, offset, how). Area code first; the state breaks ties when an
+    area code spans zones and is the fallback when it gives nothing."""
+    zones = []
+    try:
+        zones = [z for z in pn_timezone.time_zones_for_number(phonenumbers.parse(e164, None)) if z != "Etc/Unknown"]
+    except Exception:
+        pass
+    by_state = STATE_TZ.get(state or "")
+    if len(zones) == 1:
+        return zones[0], offset_for(zones[0]), "area_code"
+    if zones and by_state in zones:
+        return by_state, offset_for(by_state), "area_code+state"
+    if zones and len(zones) <= 3:             # a split area code: take its first zone
+        return zones[0], offset_for(zones[0]), "area_code"
+    if by_state:                              # toll-free and other non-geographic numbers land here
+        return by_state, offset_for(by_state), "state"
+    return "", None, "unknown"
 
 
 def load_config(path):
@@ -159,25 +230,6 @@ def normalize_phone(raw):
     region = phonenumbers.region_code_for_number(parsed) or ""
     npa = e164[2:5] if e164.startswith("+1") and len(e164) == 12 else ""
     return e164, npa, region, extension, None
-
-
-def gmt_offset(e164):
-    """Current UTC offset for the number's area code, as VICIdial expects it."""
-    try:
-        parsed = phonenumbers.parse(e164, None)
-        zones = pn_timezone.time_zones_for_number(parsed)
-    except Exception:
-        return None, None
-    if not zones:
-        return None, None
-    tz_name = zones[0]
-    if tz_name in ("Etc/Unknown",):
-        return None, None
-    try:
-        offset = ZoneInfo(tz_name).utcoffset(datetime.now(dt_timezone.utc))
-    except Exception:
-        return tz_name, None
-    return tz_name, round(offset.total_seconds() / 3600, 2)
 
 
 def seniority_bucket(job_title):
@@ -405,6 +457,13 @@ def process(input_path, cfg, args):
             phone_raw, dialing_mobile = record.get("mobile"), True     # only number we have
         e164, npa, region, extension, error = normalize_phone(phone_raw)
         record["process"] = infer_process(record)
+        if not clean(record.get("first_name")) and clean(record.get("full_name")):      # "Dale Harlan" in one column
+            first, _, last = clean(record.get("full_name")).partition(" ")
+            record["first_name"], record["last_name"] = first, last
+        if clean(record.get("location")):                                               # Sales Navigator location string
+            city, st = split_location(record.get("location"))
+            record["city"] = clean(record.get("city")) or city
+            record["state"] = clean(record.get("state")) or st
 
         def reject(reason):
             rejected.append({
@@ -423,6 +482,10 @@ def process(input_path, cfg, args):
         if is_itar(record, cfg):
             reject("itar")
             continue
+        headcount = to_number(record.get("employees"))
+        if headcount is not None and headcount > cfg.get("prep", {}).get("max_employees", 500):
+            reject("too_large")
+            continue
         if e164 in dnc:
             reject("internal_dnc")
             continue
@@ -434,21 +497,17 @@ def process(input_path, cfg, args):
             continue
 
         seen_numbers[e164] = clean(record.get("company")) or e164
-        company_key = clean(record.get("website")).lower() or clean(record.get("company")).lower()
-        company_dupe = company_key and company_key in seen_companies
-        if company_key:
-            seen_companies.setdefault(company_key, e164)
+        website = re.sub(r"^(https?://)?(www\.)?", "", clean(record.get("website")).lower()).split("/")[0]
+        company_key = website or re.sub(r"[^a-z0-9]+", " ", clean(record.get("company")).lower()).strip()
 
-        tz_name, offset = gmt_offset(e164)
+        state = state_abbr(record.get("state"))
+        tz_name, offset, tz_how = lead_timezone(e164, state)
         is_direct = npa not in TOLLFREE_NPA
         is_engaged = bool(
             engaged_keys
             and (clean(record.get("email")).lower() in engaged_keys
                  or clean(record.get("website")).lower() in engaged_keys)
         )
-
-        state_raw = clean(record.get("state"))
-        state = STATE_TO_ABBR.get(state_raw.lower(), state_raw.upper()[:2] if state_raw else "")
 
         out = {
             # --- VICIdial standard load fields ---
@@ -488,12 +547,31 @@ def process(input_path, cfg, args):
             "_npa": npa,
             "_region": region,
             "_timezone": tz_name or "",
+            "_tz_how": tz_how,
             "_extension": extension,
-            "_company_dupe": "yes" if company_dupe else "",
+            "_company_key": company_key,
+            "_phone_raw": clean(phone_raw),
             "_engaged": "yes" if is_engaged else "",
             "_raw_score": score_lead(record, cfg, is_engaged),
         }
         (direct if is_direct else tollfree).append(out)
+
+    # One contact per company: the best-scored one, a direct line beating a
+    # switchboard on a tie. Everyone else at that company is a reject, so the
+    # owner does not get three calls in a week from the same stranger.
+    best = {}
+    for bucket_rank, bucket in ((0, direct), (1, tollfree)):
+        for row in bucket:
+            key = row["_company_key"]
+            if key and (key not in best or (-row["_raw_score"], bucket_rank) < best[key][0]):
+                best[key] = ((-row["_raw_score"], bucket_rank), row)
+    keep = {id(v[1]) for v in best.values()}
+    for bucket in (direct, tollfree):
+        for row in list(bucket):
+            if row["_company_key"] and id(row) not in keep:
+                bucket.remove(row)
+                rejected.append({"company": row["address3"], "phone_raw": row["_phone_raw"], "email": row["email"],
+                                 "reason": f"duplicate_company:{best[row['_company_key']][1]['_e164']}"})
 
     # Percentile-rank each list independently: a toll-free switchboard queue has a
     # different score distribution than direct dials and shouldn't share a scale.
@@ -501,6 +579,18 @@ def process(input_path, cfg, args):
         apply_ranks(bucket, cfg)
         bucket.sort(key=lambda r: r["rank"], reverse=True)
     return direct, tollfree, rejected, len(df)
+
+
+# What the browser dialer imports (dialer/db.py import_list_csv).
+DIALER_COLUMNS = [
+    "phone_e164", "first_name", "last_name", "company", "title", "city", "state", "timezone",
+    "gmt_offset_now", "rank", "employees", "process", "oem", "industry", "website", "linkedin_url",
+    "li_status", "email", "mobile", "is_mobile", "dm_name", "gatekeeper_name", "notes", "list_id", "source",
+]
+
+
+def dialer_rows(rows):
+    return [dict(row, phone_e164=row["_e164"], company=row["address3"]) for row in rows]
 
 
 VICI_COLUMNS = [
@@ -544,10 +634,12 @@ def write_report(path, direct, tollfree, rejected, total, cfg, input_path):
     from collections import Counter
 
     npa_counts = Counter(r["_npa"] for r in direct if r["_npa"])
-    tz_counts = Counter(r["_timezone"] for r in direct if r["_timezone"])
+    tz_counts = Counter(r["_timezone"] or "unknown" for r in direct)
+    tz_how = Counter(r["_tz_how"] for r in direct)
     reject_counts = Counter(r["reason"].split(":")[0] for r in rejected)
     engaged = sum(1 for r in direct if r["_engaged"])
-    company_dupes = sum(1 for r in direct if r["_company_dupe"])
+    mobiles = sum(1 for r in direct if r["is_mobile"])
+    accepted = sum(1 for r in direct if r["li_status"] == "accepted")
 
     lines = [
         "# List-prep report",
@@ -564,8 +656,9 @@ def write_report(path, direct, tollfree, rejected, total, cfg, input_path):
         f"| Rejected | {len(rejected)} |",
         f"| **Dialable: direct** | **{len(direct)}** |",
         f"| Dialable: toll-free/switchboard | {len(tollfree)} |",
-        f"| Same-company duplicates (kept, flagged) | {company_dupes} |",
         f"| Engaged w/ email sequence | {engaged} |",
+        f"| LinkedIn invite accepted | {accepted} |",
+        f"| Flagged mobile (blocked unless compliance.allow_mobile) | {mobiles} |",
         "",
         "## Rejection reasons",
         "",
@@ -584,10 +677,13 @@ def write_report(path, direct, tollfree, rejected, total, cfg, input_path):
     for npa, count in npa_counts.most_common(12):
         lines.append(f"| {npa} | {count} | {count / max(len(direct), 1) * 100:.1f}% |")
 
-    lines += ["", "## Timezone distribution: staff your shifts here", "",
-              "| Timezone | Leads |", "|---|---|"]
+    lines += ["", "## Leads per timezone", "",
+              "The dialer walks these east to west through each zone's power windows.", "",
+              "| Timezone | Leads | % of direct |", "|---|---|---|"]
     for tz_name, count in tz_counts.most_common():
-        lines.append(f"| {tz_name} | {count} |")
+        lines.append(f"| {tz_name} | {count} | {count / max(len(direct), 1) * 100:.1f}% |")
+    lines += ["", "| Timezone came from | Leads |", "|---|---|"]
+    lines += [f"| {how} | {count} |" for how, count in tz_how.most_common()]
 
     raw_counts = Counter(r["_raw_score"] for r in direct)
     lines += [
@@ -648,19 +744,22 @@ def main():
         "direct": os.path.join(args.outdir, f"vicidial_{tag}_direct_{stamp}.csv"),
         "tollfree": os.path.join(args.outdir, f"vicidial_{tag}_tollfree_{stamp}.csv"),
         "rejected": os.path.join(args.outdir, f"rejected_{tag}_{stamp}.csv"),
-        "report": os.path.join(args.outdir, f"prep_report_{tag}_{stamp}.md"),
+        "report": os.path.join(args.outdir, "prep_report.md"),
+        "dialer": os.path.join(args.outdir, f"{tag}_list_{datetime.now().strftime('%Y-%m-%d')}.csv"),
     }
 
     write_csv(direct, paths["direct"], VICI_COLUMNS)
     write_csv(tollfree, paths["tollfree"], VICI_COLUMNS)
     write_csv(rejected, paths["rejected"], ["company", "phone_raw", "email", "reason"])
     write_report(paths["report"], direct, tollfree, rejected, total, cfg, input_path)
+    write_csv(dialer_rows(direct), paths["dialer"], DIALER_COLUMNS)
 
     print(f"  input rows        {total}")
     print(f"  dialable direct   {len(direct)}   -> {paths['direct']}")
     print(f"  toll-free         {len(tollfree)}   -> {paths['tollfree']}")
     print(f"  rejected          {len(rejected)}   -> {paths['rejected']}")
     print(f"  report            {paths['report']}")
+    print(f"  dialer list       {paths['dialer']}   (dialer/serve.py --list {cfg['campaign']['list_id_direct']})")
 
     if args.split_agents > 0:
         base = cfg["campaign"]["list_id_direct"]

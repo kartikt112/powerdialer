@@ -96,6 +96,12 @@ scoring:
   itar_defense:
     words: [defense, defence, itar, dod, military]
 
+# List-prep rejects beyond phone validity, region, DNC and ITAR.
+prep:
+  max_employees: 500       # bigger shops have a quality department; reason `too_large`
+  # One contact per company survives: the best-scored, a direct line beating
+  # a switchboard on a tie. The rest are rejected as `duplicate_company`.
+
 suppression:
   dnc_file: dnc.csv                  # internal do-not-call, checked at prep AND dial time
   called_log: cache/called_log.csv   # dialed-recently suppression

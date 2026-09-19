@@ -64,5 +64,74 @@ class Process(unittest.TestCase):
         self.assertEqual(listprep.infer_process({"company": "Acme Holdings"}), "")
 
 
+class Locations(unittest.TestCase):
+    def test_sales_navigator_location_strings(self):
+        self.assertEqual(listprep.split_location("Dayton, Ohio, United States"), ("Dayton", "OH"))
+        self.assertEqual(listprep.split_location("Erie, PA"), ("Erie", "PA"))
+        self.assertEqual(listprep.split_location("Greater Chicago Area"), ("", ""))
+
+    def test_timezone_prefers_area_code_then_state(self):
+        zone, offset, how = listprep.lead_timezone("+19372040101", "OH")
+        self.assertEqual((zone, how), ("America/New_York", "area_code"))
+        self.assertIn(offset, (-4.0, -5.0))
+        zone, _, how = listprep.lead_timezone("+18002040101", "TX")        # toll-free: no geography
+        self.assertEqual((zone, how), ("America/Chicago", "area_code+state"))
+        self.assertEqual(listprep.lead_timezone("+18002040101", "")[2], "unknown")
+
+
+class EndToEnd(unittest.TestCase):
+    """Both list shapes through process(), then into the dialer database."""
+
+    def run_prep(self, header, rows):
+        import csv, tempfile
+        from types import SimpleNamespace
+        self.tmp = tempfile.mkdtemp()
+        src = os.path.join(self.tmp, "in.csv")
+        with open(src, "w", newline="") as fh:
+            w = csv.writer(fh); w.writerow(header); w.writerows(rows)
+        cfg = dict(CFG, suppression=dict(CFG["suppression"], dnc_file=os.path.join(self.tmp, "none.csv"),
+                                         called_log=os.path.join(self.tmp, "none2.csv")))
+        return listprep.process(src, cfg, SimpleNamespace()), src
+
+    def test_cold_call_list_shape(self):
+        (direct, tollfree, rejected, total), _ = self.run_prep(
+            ["company", "phone", "website", "city", "state", "process"],
+            [["Harlan Precision Machining", "(937) 204-0101", "harlan.example", "Dayton", "Ohio", "CNC machining"],
+             ["Patriot Defense Machining", "703-204-0103", "patriot.example", "Reston", "VA", "machining"],
+             ["Acme Holdings", "800-204-0105", "acme.example", "Chicago", "IL", ""],
+             ["Harlan Precision Machining", "(937) 204-0101", "harlan.example", "Dayton", "Ohio", "CNC machining"]])
+        self.assertEqual([r["address3"] for r in direct], ["Harlan Precision Machining"])
+        self.assertEqual((direct[0]["state"], direct[0]["timezone"], direct[0]["process"]), ("OH", "America/New_York", "cnc machining"))
+        self.assertEqual([r["address3"] for r in tollfree], ["Acme Holdings"])
+        self.assertEqual(sorted(r["reason"].split(":")[0] for r in rejected), ["duplicate_of", "itar"])
+
+    def test_sales_navigator_shape_keeps_the_best_contact_per_company(self):
+        (direct, _, rejected, _), _ = self.run_prep(
+            ["First Name", "Last Name", "Title", "Company Name", "Company Website", "Person Linkedin Url", "Location", "Company Headcount", "Phone", "LI Status"],
+            [["Tina", "Brooks", "Buyer", "Harlan Precision Machining", "https://www.harlan.example/about", "", "Dayton, Ohio, United States", "48", "937-204-0177", ""],
+             ["Dale", "Harlan", "Owner", "Harlan Precision Machining", "harlan.example", "https://linkedin.com/in/x", "Dayton, Ohio, United States", "48", "937-204-0101", "accepted"],
+             ["Sam", "Big", "President", "Mega Stamping", "mega.example", "", "Detroit, Michigan, United States", "1,200", "313-204-0120", ""]])
+        self.assertEqual([(r["first_name"], r["title"], r["city"], r["state"], r["li_status"]) for r in direct],
+                         [("Dale", "Owner", "Dayton", "OH", "accepted")])
+        self.assertEqual(sorted(r["reason"].split(":")[0] for r in rejected), ["duplicate_company", "too_large"])
+
+    def test_dialer_csv_round_trips_into_the_database(self):
+        import tempfile
+        sys.path.insert(0, os.path.join(ROOT, "dialer"))
+        import db
+        (direct, _, _, _), _ = self.run_prep(
+            ["company", "phone", "website", "city", "state", "process", "employees", "oem", "email", "dm_name"],
+            [["Keystone Stamping", "814-204-0102", "keystone.example", "Erie", "PA", "stamping", "85", "GM", "m@keystone.example", "Marie Kowalski"]])
+        out = os.path.join(self.tmp, "ppap_list_test.csv")
+        listprep.write_csv(listprep.dialer_rows(direct), out, listprep.DIALER_COLUMNS)
+        db.DATA_DIR = self.tmp
+        db.DB_PATH = os.path.join(self.tmp, "dialer.db")
+        db.init()
+        self.assertEqual(db.import_list_csv(out), (1, 0))
+        lead = db.lookup("+18142040102")
+        self.assertEqual((lead["company"], lead["process"], lead["oem"], lead["employees"], lead["dm_name"], lead["tz_name"], lead["list_id"]),
+                         ("Keystone Stamping", "stamping", "GM", "85", "Marie Kowalski", "America/New_York", "101"))
+
+
 if __name__ == "__main__":
     unittest.main()
