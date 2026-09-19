@@ -1,125 +1,200 @@
 # powerdialer
 
-List-prep pipeline for a self-hosted **VICIdial + Telnyx** power dialer.
-US/CA outbound B2B, human agents, single-line dialing.
+Browser power dialer and list-prep pipeline for the **PXL Kraft PPAP campaign**.
+One caller, dialing US machining, stamping, forging, casting and fab shops
+during their business hours. The only goal of a call is a booked
+fifteen-minute call. Sales method: Imperium cold-calling structure, PXL Kraft
+wording, every string in `config.yaml`.
 
-Excel in → validated, scored, timezone-bucketed, VICIdial-ready lead files out.
-
-See [RUNBOOK.md](RUNBOOK.md) for the server build (Telnyx trunk, VICIbox install,
-campaign config, compliance wiring, security).
+Python server + SQLite + a single-page cockpit + Twilio Voice SDK. No
+framework, no build step. The carrier sits behind one adapter
+(`dialer/js/carrier.js`), so Telnyx can replace Twilio without touching the
+cockpit. [RUNBOOK.md](RUNBOOK.md) covers the older self-hosted VICIdial +
+Telnyx stack; its load files are still written by list prep.
 
 ## Setup
 
 ```bash
-python3.12 -m pip install -r requirements.txt
+uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ```
+
+`python3.12 -m pip install -r requirements.txt` works too. If PyYAML is missing
+from the Python you launch with and `.venv/` exists, `serve.py` re-runs itself
+inside it.
 
 ## Usage
 
 ```bash
-# Prep a list, split across 5 agent seats (list_id 101-105)
-python3.12 listprep.py \
-    --input ~/lead-automation/output/final_leads_master_20260421_1443.xlsx \
-    --split-agents 5
+# Prep a list: the cold-call list shape or a Sales Navigator export, .csv or .xlsx
+python3.12 listprep.py --input ~/lists/us-shops.csv
+#   -> out/ppap_list_<date>.csv   the dialer's list
+#      out/prep_report.md         counts per timezone and per reject reason
+#      out/vicidial_ppap_*.csv    VICIdial load files
 
-# Validate numbers before dialing (~$0.004/number)
+# Optional: tag line types before dialing (about $0.004 a number). Rows tagged
+# mobile are blocked by the dialer unless compliance.allow_mobile is true.
 export TELNYX_API_KEY=...
-python3.12 telnyx_lookup.py --input out/vicidial_tiktokshop_agent1_list101_*.csv
+python3.12 telnyx_lookup.py --input out/ppap_list_<date>.csv
 
-# Cost check without spending anything
-python3.12 telnyx_lookup.py --input out/x.csv --estimate-only
-
-# Browser dialer on the newest prepped list (simulator without credentials;
-# real calls with the TWILIO_* env vars set — see dialer/TWILIO.md).
-# The agent menu's "Load list…" item also accepts a raw .xlsx/.csv and runs
-# this same prep pipeline server-side — no CLI needed.
+# Run the dialer on the newest prepped list for list id 101
 python3.12 dialer/serve.py --list 101
 ```
 
-## Agent cockpit
+With no `TWILIO_*` variables the dialer is a **simulator**: calls are faked,
+everything else is real. An empty database is seeded with sample shops and the
+calling windows are left open so you can practise at any hour
+(`--strict-windows` enforces them anyway). With credentials the windows are
+always enforced. See [dialer/TWILIO.md](dialer/TWILIO.md), including the two
+console changes the caller-ID pool and the `pawan` seat need.
 
-`dialer/serve.py` serves a three-pane agent screen.
+```bash
+.venv/bin/python -m unittest discover tests      # 70+ tests, under a second
+```
 
-- **Power session** — *Start session* (or `p`) dials each lead on its own a
-  few seconds after it loads. `esc` holds one lead, `space` dials now, *Pause*
-  takes a reason and waits for the current call to be wrapped up. Hand-picked
-  leads (queue click, callback, inbox, typed number) never auto-dial.
-- **Left rail** — Queue with search across every list, Callbacks (call now /
-  reschedule / remove), today's Calls with an outcome breakdown, and an Inbox
-  of missed inbound calls and voicemails with one-click call back.
-- **Lead** — local time with a calling-hours warning, research links, the last
-  note, and a notes box that is live during the call and autosaves a draft.
-- **Wrap-up** — ten outcomes on `1`-`9` `0`, a suggested outcome on `enter`
-  after a no-answer, a confirm step before do-not-call, and `z` to undo the
-  last outcome for a few seconds.
-- **Right rail** — Opener / Voicemail / Gatekeeper / Objections scripts and
-  the lead's full call history. The recording-disclosure prompt shows only
-  while `dialer.recording` is true; nothing is ever played to the callee.
+## The funnel
 
-Outcomes, scripts, pause reasons, agent seats, the daily goal and the
-auto-dial delay all live under `dialer:` in `config.yaml`. Press `?` in the
-app for every shortcut.
+Every saved call is stamped with funnel flags from its outcome
+(`dialer.outcomes` in `config.yaml`), so later config edits never rewrite
+history.
+
+| Key | Outcome | Counts as |
+|---|---|---|
+| 1 | Booked call | pickup, DM pitched, resonation, offered, booked |
+| 2 | Callback (DM) | pickup, DM pitched |
+| 3 | Resonated, no book | pickup, DM pitched, resonation, offered |
+| 4 | Pitched, not a fit | pickup, DM pitched |
+| 5 | DM reached, no pitch | pickup, DM reached |
+| 6 | Gatekeeper blocked | pickup |
+| 7 | Voicemail left | dial |
+| 8 | No answer / busy | dial |
+| 9 | Wrong number / disconnected | dial |
+| 0 | Do not call | pickup; number blocked for good |
+
+A pickup opens wrap-up level 2: objections heard (multi-select), whether you
+asked for the meeting, the decision maker's name, email and mobile, and their
+pain in their words. A booking needs their email and the time **on their
+clock**.
+
+| Rate | Definition | Target |
+|---|---|---|
+| **ABR** booking rate | booked / dials | **2%+**, team benchmark 4.5%. The star metric. |
+| Pickup rate | pickups / dials | 20%+. Under 20% across 50+ dials on one caller ID: that number is probably spam-labelled. |
+| DM reach rate | DMs pitched / pickups | 50%+ |
+| PR pitch rate | DMs pitched / dials | tracked |
+| RR resonation rate | resonations / DMs pitched | tracked |
+| Offer rate | offered / resonations | 33%+ |
+| SUR show-up rate | showed / booked calls that have come due | 60%+ |
+| SCR sales conversion | sales / showed | 25%+ |
+| Effective conversations | unique leads a day with a pickup where you offered or they resonated | 10 a day. The beginner star metric. |
+
+Rates are coloured good, warn (within 75% of target) or bad, and stay grey
+until the denominator reaches `targets.min_sample`.
+
+**Attribution.** Show, no-show and sale are marked later from the Bookings or
+Calls rail. A sales call done and a sale are credited to the **date of the dial
+that booked them**, not the date of the meeting. **Days** run on
+`dialer.stats_timezone` (US Eastern): you dial from India, and US business
+hours cross midnight in both IST and UTC.
+
+The funnel bar shows today, this week or all time, per-hour rates for the
+running session and today's top two objections. `t` opens the full sheet with
+a per-script-version breakdown. `/api/funnel.csv?range=today|week|all` exports
+the Imperium tracker columns exactly: `Date, Calls, DM's Pitched, Resonations,
+Call Booked, Sales Calls Done, Sales, Sales $, Notes`.
+
+## How the dialer decides
+
+- **Windows, on the prospect's clock.** Power 08:15-10:15 and 15:45-17:45,
+  secondary 10:15-11:30 and 13:30-15:45, never 11:30-13:30, never before 08:00
+  or after 18:00, never weekends. Power-window zones are dialed first, so the
+  queue walks ET, CT, MT, PT by itself. A callback the prospect asked for may
+  ring any time inside 08:00-18:00. Config that reaches outside the TCPA hours
+  (08:00-21:00) is refused at startup.
+- **Retries.** Six tries over about three weeks: never the same day, never the
+  same weekday twice running, mornings and afternoons alternating. Voicemail on
+  tries 1, 3 and 5 only. After try 6 the lead closes as EXHAUSTED, is tagged
+  `email_only` and is written to `out/exhausted_for_email.csv`.
+- **Caller IDs.** `numbers.pool`: area code match, then same state, then round
+  robin. 30 dials a day for a number's first 21 days, 150 after, and that is a
+  hard stop. A number whose 7-day pickup rate drops under 15% across 100+ dials
+  is parked automatically. The Numbers rail shows all of it.
+- **Sessions.** Pick a target (100 dials or 90 minutes by default) and a script
+  version. The ETA is time and a half: dials left x average seconds per dial x
+  1.5. The session stops itself at the target and shows its own funnel and its
+  most common objection.
+- **Compliance.** Internal do-not-call at prep and at dial time, an optional
+  national scrub file checked at both (`compliance.dnc_scrub_file`), mobiles
+  blocked unless `compliance.allow_mobile`, 30-day recall suppression at prep,
+  ITAR and defense shops rejected at prep. Nothing is ever played to the person
+  you call; the recording prompt appears only while `dialer.recording` is true.
+
+## The cockpit
+
+- **Left rail.** Queue (search every list), Callbacks, Bookings (mark show,
+  no-show, sale), today's Calls, Inbox (missed calls and voicemails), Numbers.
+- **Lead.** Their local time and which window they are in, try n of 6, the
+  caller ID they will see, process, OEM, headcount, LinkedIn status, the last
+  pain line, research links, live notes, and discovery fields that stick to the
+  lead.
+- **Script rail.** The call as a tree: gatekeeper, permission, pull pitch,
+  negative branch, qualify, ask, book. The current step is big, the next two
+  small. Voicemail and they-called-back are their own flows. `o` opens a
+  searchable objections panel in the anchor / pattern disrupt / question shape;
+  rebuttals edited there are kept in `DATA_DIR/objections.json`. Script versions
+  (`dialer.scripts.tree`) are picked per session and split every stat.
+- **After a booking.** The follow-up email (subject: their first name) copies
+  with `e`, and `dialer.booking_webhook_url` is called so the invite can be
+  created outside the app.
+
+Keys: `p` session, `space` dial or hang up, `1`-`9` `0` outcomes, `enter` save
+or accept the suggestion, `z` undo, arrows walk the script, `b` book, `o`
+objections, `e` copy email, `t` stats, `n` notes, `/` search, `d` dial a
+number, `?` everything else.
 
 ## Pipeline
 
 ```
 Excel/CSV
-  → column mapping (alias table, tolerant of source-list shape changes)
-  → E.164 normalize (handles bare 10/11-digit, +1 formats, extensions)
-  → US/CA region filter
-  → dedupe by number; flag same-company duplicates
-  → toll-free/switchboard split (separate list + script)
-  → timezone + gmt_offset from area code
-  → internal DNC + recently-called suppression
-  → priority score → percentile rank
-  → per-agent stratified split
-  → VICIdial CSV + rejection log + report
+  -> column mapping (alias table: cold-call list shape, Sales Navigator exports)
+  -> E.164 normalize (bare 10/11-digit, +1 formats, extensions)
+  -> US/CA region filter
+  -> rejects: ITAR / defense words, over prep.max_employees, internal DNC,
+     national scrub file, called within 30 days, duplicate number
+  -> one contact per company: the best-scored one
+  -> toll-free/switchboard split (separate list + script)
+  -> timezone from area code, the state as tie-break and fallback
+  -> priority score -> percentile rank
+  -> ppap_list_<date>.csv + prep_report.md + VICIdial CSVs + rejection log
 ```
 
 ## Files
 
 | Path | Purpose |
 |---|---|
-| `listprep.py` | Main pipeline |
+| `listprep.py` | List prep pipeline |
 | `telnyx_lookup.py` | Number validation + line-type tagging, cached |
-| `dialer/serve.py` | Dialer server — queue API, Twilio tokens/REST, uploads |
-| `dialer/db.py` | SQLite state: checkout, retries, callbacks, caps, DNC, notes |
-| `dialer/index.html` | Agent cockpit markup — three panes: rail (queue, callbacks, calls, inbox), lead, script + history |
-| `dialer/app.js` | Agent cockpit logic — power session (auto-dial), call controls, notes, wrap-up + undo, shortcuts |
-| `dialer/app.css` | Design system — tokens, light/dark themes, call-state colour, responsive layout |
-| `dialer/TWILIO.md` | Twilio setup + deployed architecture notes |
-| `config.yaml` | Calling hours, retry policy, scoring weights, compliance settings |
-| `dnc.csv` | Internal do-not-call. Export from VICIdial weekly. |
-| `cache/called_log.csv` | Recently-dialed suppression (30-day default) |
-| `out/` | Generated lead files, rejection logs, prep reports |
+| `config.yaml` | Scoring, retry cadence, caller-ID pool, windows, outcomes, targets, every script string |
+| `dialer/serve.py` | HTTP server: queue API, config, carrier tokens and REST, uploads, webhook |
+| `dialer/db.py` | SQLite state: checkout, windows, retries, callbacks, caps, DNC, sessions, funnel rows |
+| `dialer/policy.py` | Pure rules: windows, retry scheduler, voicemail tries, caller-ID picker, caps, parking |
+| `dialer/funnel.py` | Pure funnel maths: counts, rates, attribution, the Imperium sheet |
+| `dialer/index.html`, `dialer/app.css` | Cockpit markup and design system |
+| `dialer/js/*.js` | Cockpit modules: app, wrap, script, funnel, rails, session, modals, carrier, ui, util, state, api |
+| `dialer/demo_leads.csv` | Sample shops seeded into an empty database in simulator mode |
+| `dialer/TWILIO.md` | Twilio setup, the caller-ID pool Function, the Telnyx path |
+| `tests/` | Policy, funnel, database (frozen clock), config lint, list prep |
+| `docs/` | The upgrade plan and cockpit screenshots |
+| `out/` | Generated lists, rejection logs, reports, `exhausted_for_email.csv` |
 
 ## Scoring
 
-Raw fit score → **percentile rank** within each load, written to VICIdial's `rank`
-column. Campaigns dial `DOWN RANK`, so the warmest leads get called first.
+Raw fit score -> **percentile rank** within each load. The queue dials down
+rank inside whichever window is open, so the best-fit shops get the first power
+window of their day. Only features that **vary** across the list are weighted.
 
-Only features that **vary** across the list are weighted. `has_email` (100%
-coverage) and `direct_dial` (already encoded by the list split) are deliberately
-excluded — a weight everyone earns is a constant, and a constant ranks nothing.
-
-Current signals: TikTok presence and follower band (mid-tier scores highest —
-real audience, no agency yet), company-size fit, title seniority, Instagram-
-without-TikTok, and email-sequence engagement if available.
-
-To wire up engagement (the strongest signal at +40), export replied/opened
-contacts from PlusVibe and point `suppression.engagement_file` at the file.
-
-## VICIdial schema constraints handled
-
-These bite silently on load:
-
-- `vendor_lead_code` `varchar(20)` — a 16-char hash of the E.164, stable across runs
-- `comments` `varchar(255)` — screen-pop context, truncated
-- `state` `varchar(2)` — "California" → "CA"
-- `title` `varchar(4)` — a **salutation**, not a job title. Left empty; job title
-  goes to a custom field.
-- No company field — company name goes in `address3`
-- `phone_number` is bare 10-digit NANP, with `phone_code` = `1`
-
-Custom fields must be created on the VICIdial list **before** loading, or those
-columns are discarded without warning.
+Signals: title (owner / president / CEO / founder 15, quality manager /
+engineer / director 15, GM / plant manager / VP operations or engineering 12),
+headcount (25-99 scores highest, 500+ is rejected), a process word in the name
+or notes (+10), an automotive / aerospace / medical word (+8), LinkedIn invite
+accepted (+20), engaged with the cold email (+40). Weights live in
+`config.yaml`.
