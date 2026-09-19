@@ -71,19 +71,23 @@ COLUMN_ALIASES = {
     "last_name": ["last name", "last_name", "lastname", "lname"],
     "email": ["email", "email address", "work email"],
     "job_title": ["job title", "title", "position", "role"],
-    "domain": ["domain", "website", "web site"],
-    "url": ["url", "product page link", "store url"],
-    "phone": ["phone", "phone number", "telephone", "mobile", "direct dial"],
+    "website": ["website", "web site", "domain", "company website", "url"],
+    "phone": ["phone", "phone number", "telephone", "direct dial", "company phone", "work phone"],
+    "mobile": ["mobile", "mobile phone", "cell", "cell phone"],
     "city": ["city", "town"],
     "state": ["state", "province", "region"],
-    "categories": ["categories", "category", "niche"],
-    "tiktok": ["tiktok", "tiktok handle", "tiktok url"],
-    "tiktok_followers": ["tiktok followers", "tiktok_followers", "followers"],
-    "instagram": ["instagram", "ig"],
-    "industry": ["industry", "vertical"],
-    "company_size": ["company size", "employees", "employee count", "headcount"],
-    "screenshot_url": ["screenshot url", "screenshot"],
-    "linkedin": ["linkedin"],
+    "industry": ["industry", "vertical", "categories", "category"],
+    "employees": ["employees", "employee count", "headcount", "company size", "company headcount",
+                  "# employees", "number of employees"],
+    "process": ["process", "processes", "capability", "capabilities", "primary process"],
+    "oem": ["oem", "oems", "customers", "key customers", "supplies"],
+    "linkedin_url": ["linkedin", "linkedin url", "linkedin_url", "profile url", "person linkedin url"],
+    "li_status": ["li_status", "li status", "linkedin status", "invite status", "connection status"],
+    "source": ["source", "lead source", "list"],
+    "dm_name": ["dm_name", "dm name", "decision maker", "decision maker name", "owner name"],
+    "gatekeeper_name": ["gatekeeper_name", "gatekeeper name", "gatekeeper", "receptionist"],
+    "notes": ["notes", "note", "comments", "description", "about"],
+    "line_type": ["line_type", "line type", "phone type"],
 }
 
 
@@ -177,16 +181,61 @@ def gmt_offset(e164):
 
 
 def seniority_bucket(job_title):
+    """owner | ops | quality | other. Quality is checked before ops so a
+    'VP Quality' lands with the people who own the PPAP pain."""
     title = clean(job_title).lower()
     if not title:
         return "other"
-    if re.search(r"\b(founder|co-?founder|owner|ceo|president|proprietor)\b", title):
-        return "founder"
-    if re.search(r"\b(cmo|cro|coo|cfo|cto|vp|vice president|head of|director|chief)\b", title):
-        return "exec"
-    if re.search(r"\b(manager|lead|specialist|coordinator|strategist)\b", title):
-        return "manager"
+    if re.search(r"\b(owner|co-?owner|president|ceo|chief executive|founder|co-?founder|proprietor|principal)\b", title):
+        return "owner"
+    if re.search(r"\bquality\b|\bqa\b|\bqc\b", title):
+        return "quality"
+    if re.search(r"\b(gm|general manager|plant manager|operations manager|"
+                 r"(vp|vice president)[ ,of]*(operations|engineering|manufacturing)|"
+                 r"director of (operations|engineering|manufacturing)|coo)\b", title):
+        return "ops"
     return "other"
+
+
+def keyword_hit(text, words):
+    """True when any configured word appears as a whole word in `text`.
+    A trailing * makes it a prefix match: 'fab*' hits fab, fabrication,
+    fabricators."""
+    text = text.lower()
+    for word in words or []:
+        word = str(word).lower().strip()
+        if not word:
+            continue
+        pattern = (r"\b" + re.escape(word[:-1]) + r"\w*") if word.endswith("*") \
+            else (r"(?<!\w)" + re.escape(word) + r"(?!\w)")
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+def lead_text(row):
+    """Everything a keyword rule may look at."""
+    return " | ".join(clean(row.get(k)) for k in ("company", "process", "industry", "notes", "oem"))
+
+
+# First match wins; used to fill {process} in the scripts when the list has
+# no process column.
+PROCESS_WORDS = [
+    (r"\bstamp", "stamping"), (r"\bforg", "forging"), (r"\b(cast|foundry)", "casting"),
+    (r"\btool\s*(&|and)\s*die\b|\btooling\b", "tool and die"),
+    (r"\bfab", "fabrication"), (r"\b(cnc|machin|precision)", "machining"),
+]
+
+
+def infer_process(row):
+    given = clean(row.get("process")).lower()
+    if given:
+        return given.split(",")[0].split("/")[0].strip()
+    text = lead_text(row).lower()
+    for pattern, label in PROCESS_WORDS:
+        if re.search(pattern, text):
+            return label
+    return ""
 
 
 def to_number(raw):
@@ -213,8 +262,8 @@ def bucket_points(raw, table):
     """Map a numeric value onto a {threshold: points} table (highest match wins)."""
     count = to_number(raw)
     if count is None:
-        return table.get("0", 0)
-    for threshold in sorted((int(k) for k in table), reverse=True):
+        return table.get("unknown", table.get("0", 0))
+    for threshold in sorted((int(k) for k in table if str(k).isdigit()), reverse=True):
         if count >= threshold:
             return table[str(threshold)]
     return table.get("0", 0)
@@ -222,22 +271,26 @@ def bucket_points(raw, table):
 
 def score_lead(row, cfg, engaged):
     """
-    Raw fit score. Only discriminating features count - see config.yaml for why
-    has_email and direct_dial are excluded. Converted to a percentile rank later.
+    Raw fit score for a PPAP prospect. Only discriminating features count; see
+    config.yaml. Converted to a percentile rank later.
     """
     weights = cfg["scoring"]
-    points = 0
-    has_tiktok = bool(clean(row.get("tiktok")))
-    if has_tiktok:
-        points += weights["tiktok_present"]
-        points += bucket_points(row.get("tiktok_followers"), weights["tiktok_followers"])
-    elif clean(row.get("instagram")):
-        points += weights["instagram_no_tiktok"]
-    points += bucket_points(row.get("company_size"), weights["company_size_fit"])
-    points += weights["title_seniority"][seniority_bucket(row.get("job_title"))]
+    text = lead_text(row)
+    points = weights["title_seniority"][seniority_bucket(row.get("job_title"))]
+    points += bucket_points(row.get("employees"), weights["company_size_fit"])
+    if keyword_hit(text, weights["process_keywords"]["words"]):
+        points += weights["process_keywords"]["points"]
+    if keyword_hit(text, weights["auto_aero_keywords"]["words"]):
+        points += weights["auto_aero_keywords"]["points"]
+    if clean(row.get("li_status")).lower() == "accepted":
+        points += weights["linkedin_accepted"]
     if engaged:
         points += weights["engaged"]
     return max(0, points)
+
+
+def is_itar(row, cfg):
+    return keyword_hit(lead_text(row), cfg["scoring"]["itar_defense"]["words"])
 
 
 def apply_ranks(rows, cfg):
@@ -328,10 +381,8 @@ def short_id(e164):
 def build_comments(row):
     """Agent screen-pop context. Hard-capped at VICIdial's 255-char comments field."""
     parts = []
-    for label, key in (
-        ("Cat", "categories"), ("Ind", "industry"), ("TT", "tiktok_followers"),
-        ("Size", "company_size"), ("Site", "domain"),
-    ):
+    for label, key in (("Proc", "process"), ("OEM", "oem"), ("Ind", "industry"),
+                       ("Size", "employees"), ("Site", "website")):
         value = clean(row.get(key))
         if value:
             parts.append(f"{label}:{value}")
@@ -349,12 +400,16 @@ def process(input_path, cfg, args):
 
     for _, row in df.iterrows():
         record = row.to_dict()
-        e164, npa, region, extension, error = normalize_phone(record.get("phone"))
+        phone_raw, dialing_mobile = record.get("phone"), False
+        if not clean(phone_raw) and clean(record.get("mobile")):
+            phone_raw, dialing_mobile = record.get("mobile"), True     # only number we have
+        e164, npa, region, extension, error = normalize_phone(phone_raw)
+        record["process"] = infer_process(record)
 
         def reject(reason):
             rejected.append({
                 "company": clean(record.get("company")),
-                "phone_raw": clean(record.get("phone")),
+                "phone_raw": clean(phone_raw),
                 "email": clean(record.get("email")),
                 "reason": reason,
             })
@@ -364,6 +419,9 @@ def process(input_path, cfg, args):
             continue
         if region not in allowed_regions:
             reject(f"out_of_region:{region or 'unknown'}")
+            continue
+        if is_itar(record, cfg):
+            reject("itar")
             continue
         if e164 in dnc:
             reject("internal_dnc")
@@ -376,7 +434,7 @@ def process(input_path, cfg, args):
             continue
 
         seen_numbers[e164] = clean(record.get("company")) or e164
-        company_key = clean(record.get("domain")).lower() or clean(record.get("company")).lower()
+        company_key = clean(record.get("website")).lower() or clean(record.get("company")).lower()
         company_dupe = company_key and company_key in seen_companies
         if company_key:
             seen_companies.setdefault(company_key, e164)
@@ -386,7 +444,7 @@ def process(input_path, cfg, args):
         is_engaged = bool(
             engaged_keys
             and (clean(record.get("email")).lower() in engaged_keys
-                 or clean(record.get("domain")).lower() in engaged_keys)
+                 or clean(record.get("website")).lower() in engaged_keys)
         )
 
         state_raw = clean(record.get("state"))
@@ -410,17 +468,21 @@ def process(input_path, cfg, args):
             "rank": 0,                                     # filled after scoring
             "gmt_offset_now": offset if offset is not None else "",
             # --- list custom fields (create these on the VICIdial list) ---
-            "job_title": clean(record.get("job_title")),
-            "domain": clean(record.get("domain")),
-            "url": clean(record.get("url")),
-            "tiktok": clean(record.get("tiktok")),
-            "tiktok_followers": clean(record.get("tiktok_followers")),
-            "instagram": clean(record.get("instagram")),
+            "title": clean(record.get("job_title")),
+            "employees": clean(record.get("employees")),
+            "process": clean(record.get("process")),
+            "oem": clean(record.get("oem")),
             "industry": clean(record.get("industry")),
-            "categories": clean(record.get("categories")),
-            "company_size": clean(record.get("company_size")),
-            "screenshot_url": clean(record.get("screenshot_url")),
-            "linkedin": clean(record.get("linkedin")),
+            "website": clean(record.get("website")),
+            "linkedin_url": clean(record.get("linkedin_url")),
+            "li_status": clean(record.get("li_status")).lower(),
+            "mobile": clean(record.get("mobile")),
+            "source": clean(record.get("source")) or os.path.basename(input_path),
+            "dm_name": clean(record.get("dm_name")),
+            "gatekeeper_name": clean(record.get("gatekeeper_name")),
+            "notes": clean(record.get("notes"))[:500],
+            "is_mobile": "1" if (dialing_mobile or clean(record.get("line_type")).lower() == "mobile") else "",
+            "timezone": tz_name or "",
             # --- our own bookkeeping, not loaded into VICIdial ---
             "_e164": e164,
             "_npa": npa,
@@ -445,8 +507,10 @@ VICI_COLUMNS = [
     "vendor_lead_code", "source_id", "list_id", "phone_code", "phone_number",
     "first_name", "last_name", "address3", "city", "state", "email", "comments",
     "rank", "gmt_offset_now",
-    "job_title", "domain", "url", "tiktok", "tiktok_followers", "instagram",
-    "industry", "categories", "company_size", "screenshot_url", "linkedin",
+    # list custom fields (create these on the VICIdial list) + what the browser dialer reads
+    "title", "employees", "process", "oem", "industry", "website", "linkedin_url",
+    "li_status", "mobile", "source", "dm_name", "gatekeeper_name", "notes",
+    "is_mobile", "timezone",
 ]
 
 

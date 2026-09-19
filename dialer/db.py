@@ -62,9 +62,13 @@ CREATE TABLE IF NOT EXISTS leads (
   phone TEXT UNIQUE NOT NULL,
   first TEXT DEFAULT '', last TEXT DEFAULT '', company TEXT DEFAULT '',
   title TEXT DEFAULT '', city TEXT DEFAULT '', state TEXT DEFAULT '',
-  tz_offset REAL DEFAULT -5,
+  tz_offset REAL DEFAULT -5, tz_name TEXT DEFAULT '',
   rank INTEGER DEFAULT 0,
-  tiktok_followers TEXT DEFAULT '', company_size TEXT DEFAULT '',
+  employees TEXT DEFAULT '', process TEXT DEFAULT '', oem TEXT DEFAULT '',
+  industry TEXT DEFAULT '', website TEXT DEFAULT '', linkedin_url TEXT DEFAULT '',
+  li_status TEXT DEFAULT '', email TEXT DEFAULT '', mobile TEXT DEFAULT '',
+  is_mobile INTEGER DEFAULT 0, source TEXT DEFAULT '',
+  dm_name TEXT DEFAULT '', gatekeeper_name TEXT DEFAULT '', lead_notes TEXT DEFAULT '',
   list_id TEXT DEFAULT '', source_file TEXT DEFAULT '',
   status TEXT DEFAULT 'NEW',
   checked_out_by TEXT, checked_out_at TEXT,
@@ -95,6 +99,22 @@ CREATE INDEX IF NOT EXISTS idx_agent_events ON agent_events(agent, at);
 # Columns added after the first deploy; applied idempotently by init().
 MIGRATIONS = [
     ("dispositions", "prev_state", "TEXT"),      # JSON lead snapshot, powers undo
+    # PPAP campaign lead fields
+    ("leads", "tz_name", "TEXT DEFAULT ''"),
+    ("leads", "employees", "TEXT DEFAULT ''"),
+    ("leads", "process", "TEXT DEFAULT ''"),
+    ("leads", "oem", "TEXT DEFAULT ''"),
+    ("leads", "industry", "TEXT DEFAULT ''"),
+    ("leads", "website", "TEXT DEFAULT ''"),
+    ("leads", "linkedin_url", "TEXT DEFAULT ''"),
+    ("leads", "li_status", "TEXT DEFAULT ''"),
+    ("leads", "email", "TEXT DEFAULT ''"),
+    ("leads", "mobile", "TEXT DEFAULT ''"),
+    ("leads", "is_mobile", "INTEGER DEFAULT 0"),
+    ("leads", "source", "TEXT DEFAULT ''"),
+    ("leads", "dm_name", "TEXT DEFAULT ''"),
+    ("leads", "gatekeeper_name", "TEXT DEFAULT ''"),
+    ("leads", "lead_notes", "TEXT DEFAULT ''"),
 ]
 
 
@@ -130,40 +150,59 @@ def lead_count(con=None):
 
 # ---------------------------------------------------------------- import --
 
+LEAD_FIELDS = ("first", "last", "company", "title", "city", "state", "tz_offset", "tz_name",
+               "rank", "employees", "process", "oem", "industry", "website", "linkedin_url",
+               "li_status", "email", "mobile", "is_mobile", "source", "dm_name",
+               "gatekeeper_name", "lead_notes", "list_id")
+
+
+def _row_to_lead(row):
+    """Accepts both list shapes listprep writes: the dialer CSV (phone_e164,
+    company, ...) and the VICIdial load file (phone_code + phone_number,
+    company in address3)."""
+    get = lambda *names: next((str(row[n]).strip() for n in names if row.get(n) not in (None, "")), "")
+    phone = get("phone_e164") or ("+" + (get("phone_code") or "1") + get("phone_number"))
+    if len(phone) != 12 or not phone[1:].isdigit():
+        return None, None
+    offset = get("gmt_offset_now", "tz_offset")
+    return phone, {
+        "first": get("first_name", "first"), "last": get("last_name", "last"),
+        "company": get("company", "address3"), "title": get("title", "job_title"),
+        "city": get("city"), "state": get("state"),
+        "tz_offset": float(offset) if offset else -5.0, "tz_name": get("timezone", "tz_name"),
+        "rank": int(float(get("rank") or 0)),
+        "employees": get("employees", "company_size"), "process": get("process"), "oem": get("oem"),
+        "industry": get("industry"), "website": get("website", "domain"),
+        "linkedin_url": get("linkedin_url", "linkedin"), "li_status": get("li_status").lower(),
+        "email": get("email"), "mobile": get("mobile"),
+        "is_mobile": 1 if get("is_mobile") in ("1", "true", "True", "yes") else 0,
+        "source": get("source"), "dm_name": get("dm_name"),
+        "gatekeeper_name": get("gatekeeper_name"), "lead_notes": get("notes", "lead_notes"),
+        "list_id": get("list_id"),
+    }
+
+
 def import_list_csv(path):
-    """Load a listprep-generated VICIdial CSV. Returns (added, refreshed)."""
+    """Load a listprep-generated list. Returns (added, refreshed). Known leads
+    that have not been worked yet pick up the new rank and research fields;
+    anything already dialed keeps its history untouched."""
     stamp = iso(now())
     source = os.path.basename(path)
+    cols = ", ".join(LEAD_FIELDS)
+    marks = ", ".join(":" + f for f in LEAD_FIELDS)
+    refresh = ", ".join(f"{f}=:{f}" for f in LEAD_FIELDS)
     processed = 0
-    with connect() as con, open(path, newline="") as fh:
+    with connect() as con, open(path, newline="", encoding="utf-8-sig") as fh:
         before = con.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
         for row in csv.DictReader(fh):
-            phone = "+" + (row.get("phone_code") or "1") + (row.get("phone_number") or "")
-            if len(phone) != 12:
+            phone, fields = _row_to_lead(row)
+            if not phone:
                 continue
-            fields = {
-                "first": row.get("first_name") or "",
-                "last": row.get("last_name") or "",
-                "company": row.get("address3") or "",
-                "title": row.get("job_title") or "",
-                "city": row.get("city") or "",
-                "state": row.get("state") or "",
-                "tz_offset": float(row.get("gmt_offset_now") or -5),
-                "rank": int(row.get("rank") or 0),
-                "tiktok_followers": row.get("tiktok_followers") or "",
-                "company_size": row.get("company_size") or "",
-                "list_id": row.get("list_id") or "",
-            }
             con.execute(
-                """INSERT INTO leads (phone, first, last, company, title, city, state,
-                     tz_offset, rank, tiktok_followers, company_size, list_id,
-                     source_file, created_at)
-                   VALUES (:phone,:first,:last,:company,:title,:city,:state,
-                     :tz_offset,:rank,:tiktok_followers,:company_size,:list_id,
-                     :source_file,:created_at)
-                   ON CONFLICT(phone) DO UPDATE SET
-                     rank=:rank, list_id=:list_id, source_file=:source_file
-                   WHERE leads.status='NEW'""",
+                f"""INSERT INTO leads (phone, {cols}, source_file, created_at)
+                    VALUES (:phone, {marks}, :source_file, :created_at)
+                    ON CONFLICT(phone) DO UPDATE SET {refresh}, source_file=:source_file
+                    WHERE leads.status='NEW' AND leads.attempts=0""",
                 dict(fields, phone=phone, source_file=source, created_at=stamp))
             processed += 1
         added = con.execute("SELECT COUNT(*) FROM leads").fetchone()[0] - before
@@ -207,6 +246,22 @@ def import_legacy(newest_list, called_log, dnc_csv):
 
 
 # ----------------------------------------------------------------- queue --
+
+def lead_offset(lead, at=None):
+    """Hours from UTC for this lead right now. The zone name survives the
+    clock change in March and November; the stored offset (taken at prep
+    time) is only the fallback."""
+    name = (lead.get("tz_name") if isinstance(lead, dict) else lead["tz_name"]) or ""
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            moment = (at or now()).replace(tzinfo=timezone.utc).astimezone(ZoneInfo(name))
+            return moment.utcoffset().total_seconds() / 3600.0
+        except Exception:
+            pass
+    stored = lead.get("tz_offset") if isinstance(lead, dict) else lead["tz_offset"]
+    return stored if stored is not None else -5.0
+
 
 def in_window(tz_offset, at=None, callback=False):
     """Is it callable now at the lead's local (UTC+offset) time?"""
@@ -257,7 +312,7 @@ def checkout(agent):
         rows = con.execute(
             """SELECT * FROM leads WHERE status='NEW' AND callback_at IS NOT NULL
                AND callback_at <= ? ORDER BY callback_at LIMIT 50""", (iso(t),)).fetchall()
-        pick = next((r for r in rows if in_window(r["tz_offset"], t, callback=True)), None)
+        pick = next((r for r in rows if in_window(lead_offset(r, t), t, callback=True)), None)
 
         if pick is None:
             rows = con.execute(
@@ -266,7 +321,7 @@ def checkout(agent):
                    AND attempts < ?
                    ORDER BY skipped, rank DESC, attempts LIMIT 400""",
                 (iso(t), MAX_ATTEMPTS)).fetchall()
-            pick = next((r for r in rows if in_window(r["tz_offset"], t)), None)
+            pick = next((r for r in rows if in_window(lead_offset(r, t), t)), None)
             if pick is None and rows:
                 return None, ("Leads remain, but none are inside their local "
                               "calling window right now.")
@@ -297,13 +352,14 @@ def queue_preview(limit=5):
                ORDER BY skipped, rank DESC LIMIT ?""", (iso(now()), limit))]
 
 
-_LIST_COLS = ("phone, first, last, company, title, city, state, tz_offset, rank, "
+_LIST_COLS = ("phone, first, last, company, title, city, state, tz_offset, tz_name, rank, process, "
               "attempts, status, last_disposition, last_called_at, next_attempt_at, "
               "callback_at, checked_out_by")
 
 
 def _list_row(r, t):
     d = dict(r)
+    d["tz_offset"] = lead_offset(d, t)               # live, DST-aware
     d["in_window"] = in_window(d["tz_offset"], t, callback=bool(d["callback_at"]))
     return d
 
@@ -359,7 +415,7 @@ def callbacks_list(limit=100):
 def calls_today(agent=None, limit=300):
     day = iso(now())[:10]
     sql = ("""SELECT d.id, d.phone, d.company, d.disposition, d.notes, d.agent,
-                     d.duration, d.at, l.first, l.last, l.tz_offset, l.status
+                     d.duration, d.at, l.first, l.last, l.tz_offset, l.tz_name, l.status
               FROM dispositions d LEFT JOIN leads l ON l.phone = d.phone
               WHERE d.at >= ? AND d.disposition != 'SKIP'""")
     args = [day]
@@ -406,7 +462,7 @@ def is_dnc(phone):
         return con.execute("SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone() is not None
 
 
-def checkout_specific(phone, agent, tz_offset=None):
+def checkout_specific(phone, agent, tz_offset=None, tz_name=""):
     """Agent picked a lead by hand (queue click, callback, typed number).
     Same guard rails as the automatic path: DNC, daily cap, the lead-local
     calling window, and no stealing a lead another agent has open. Unknown
@@ -423,10 +479,10 @@ def checkout_specific(phone, agent, tz_offset=None):
         row = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
         if row is None:
             con.execute(
-                "INSERT INTO leads (phone, company, tz_offset, list_id, source_file, created_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (phone, "", tz_offset if tz_offset is not None else -5,
-                 "manual", "manual dial", iso(t)))
+                "INSERT INTO leads (phone, company, tz_offset, tz_name, list_id, source, source_file, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (phone, "", tz_offset if tz_offset is not None else -5, tz_name or "",
+                 "manual", "manual dial", "manual dial", iso(t)))
             row = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
 
         if row["status"] == "DNC":
@@ -435,7 +491,7 @@ def checkout_specific(phone, agent, tz_offset=None):
         if (row["status"] == "OUT" and row["checked_out_by"] not in (None, agent)
                 and (row["checked_out_at"] or "") >= stale):
             return None, f"{row['checked_out_by']} has that lead open right now."
-        if not in_window(row["tz_offset"], t, callback=True):
+        if not in_window(lead_offset(row, t), t, callback=True):
             return None, "Outside that lead's local calling hours (8am to 9pm their time)."
 
         con.execute(
@@ -453,8 +509,11 @@ def reschedule(phone, callback_at):
         return cur.rowcount > 0
 
 
-_SNAP = ("status", "attempts", "last_disposition", "last_called_at",
-         "next_attempt_at", "callback_at", "skipped")
+_NO_SNAP = {"id", "phone", "created_at", "checked_out_by", "checked_out_at"}
+
+
+def _snapshot(lead):
+    return {k: lead[k] for k in lead.keys() if k not in _NO_SNAP}
 
 
 def disposition(phone, company, dispo, notes, agent, duration, callback_at=None):
@@ -463,7 +522,7 @@ def disposition(phone, company, dispo, notes, agent, duration, callback_at=None)
     t = iso(now())
     with connect() as con:
         lead = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
-        snap = {k: lead[k] for k in _SNAP} if lead else None
+        snap = _snapshot(lead) if lead else None
         if snap is not None:
             snap["had_dnc"] = con.execute(
                 "SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone() is not None
@@ -518,14 +577,14 @@ def undo(dispo_id, agent):
             return None, None, "That lead has moved on; it can no longer be undone."
 
         snap = json.loads(d["prev_state"])
+        had_dnc = snap.pop("had_dnc", False)
+        live_cols = {r["name"] for r in con.execute("PRAGMA table_info(leads)")}
+        fields = [k for k in snap if k in live_cols and k != "status"]
         con.execute(
-            """UPDATE leads SET status='OUT', checked_out_by=?, checked_out_at=?,
-               attempts=?, last_disposition=?, last_called_at=?, next_attempt_at=?,
-               callback_at=?, skipped=? WHERE phone=?""",
-            (agent, iso(t), snap["attempts"], snap["last_disposition"],
-             snap["last_called_at"], snap["next_attempt_at"], snap["callback_at"],
-             snap["skipped"], d["phone"]))
-        if d["disposition"] == "DNC" and not snap.get("had_dnc"):
+            f"UPDATE leads SET status='OUT', checked_out_by=?, checked_out_at=?, "
+            f"{', '.join(f + '=?' for f in fields)} WHERE phone=?",
+            [agent, iso(t)] + [snap[f] for f in fields] + [d["phone"]])
+        if d["disposition"] == "DNC" and not had_dnc:
             con.execute("DELETE FROM dnc WHERE phone=?", (d["phone"],))
         con.execute("DELETE FROM dispositions WHERE id=?", (dispo_id,))
         lead = con.execute("SELECT * FROM leads WHERE phone=?", (d["phone"],)).fetchone()

@@ -94,13 +94,17 @@ function renderLead() {
   renderLocal();
 
   const chips = [];
+  if (l.process) chips.push('<span class="pill info">' + icon("factory", "sm") + "<b>" + esc(l.process) + "</b></span>");
+  if (l.oem) chips.push('<span class="pill">Supplies <b>' + esc(l.oem) + "</b></span>");
   if (l.size) chips.push('<span class="pill"><b>' + esc(l.size) + "</b> employees</span>");
+  if (l.li_status === "accepted") chips.push('<span class="pill good">LinkedIn accepted</span>');
   $("c-chips").innerHTML = chips.join("");
   $("c-chips").hidden = !chips.length;
 
   const q = encodeURIComponent, links = [];
   if (l.co) {
-    links.push(["Google", "https://www.google.com/search?q=" + q(l.co)]);
+    if (l.website) links.push(["Website", /^https?:/.test(l.website) ? l.website : "https://" + l.website]);
+    links.push(["Google", "https://www.google.com/search?q=" + q(l.co + " PPAP")]);
     links.push(["LinkedIn", "https://www.linkedin.com/search/results/all/?keywords=" + q((name + " " + l.co).trim())]);
   }
   $("c-links").innerHTML = links.map((x) =>

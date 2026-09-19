@@ -47,119 +47,70 @@ DATA_DIR = os.environ.get("DATA_DIR")
 CONFIG = {"caller_id": "+1 917 555 0142"}
 
 VM_DROP_TEXT = os.environ.get("VM_DROP_TEXT",
-    "Hi, this is Sayim. Sorry I missed you: I was calling about your brand's "
-    "TikTok Shop. You can reach me back on this number, or I'll try you again "
-    "soon. Thanks, bye!")
+    "Hi, it's Pawan. Sorry I missed you. I was calling about the PPAP paperwork "
+    "on your parts. You can reach me back on this number, or I'll try you again "
+    "soon. Thanks, bye.")
 
 
 # ------------------------------------------------------------- ui config --
-# Everything the agent screen used to hard-code. config.yaml's `dialer:`
-# section overrides these key by key; the defaults keep the screen working
-# on a machine without PyYAML (serve.py itself is stdlib-only).
+# Everything the agent screen shows or says lives in config.yaml under
+# `dialer:` and reaches the browser through /api/config. These are only the
+# scalar fallbacks for keys the file leaves out.
 
 DIALER_DEFAULTS = {
     "daily_goal": 100,
     "autodial_delay_sec": 3,
-    "recording": False,          # true only if the /dial Function records
-    "agents": [],                # [{id: agent1, name: Sayim}]: empty = free text
+    "recording": False,          # true only if the carrier leg really records
+    "agents": [],
     "pause_reasons": ["Break", "Lunch", "Meeting", "Admin / follow-ups", "Coaching"],
-    # kind: final | retry | callback | dnc.  connect: a human picked up.
-    # INTERESTED, CALLBACK and DNC are load-bearing keys; the rest are yours.
-    "outcomes": [
-        {"key": "INTERESTED",   "label": "Interested",     "kind": "final",    "connect": True,  "tone": "good"},
-        {"key": "CALLBACK",     "label": "Callback",       "kind": "callback", "connect": True,  "tone": "info"},
-        {"key": "NOT_INT",      "label": "Not interested", "kind": "final",    "connect": True,  "tone": "plain"},
-        {"key": "GATEKEEPER",   "label": "Gatekeeper",     "kind": "retry",    "connect": True,  "tone": "plain"},
-        {"key": "VOICEMAIL",    "label": "Voicemail",      "kind": "retry",    "connect": False, "tone": "plain"},
-        {"key": "NO_ANSWER",    "label": "No answer",      "kind": "retry",    "connect": False, "tone": "plain"},
-        {"key": "BUSY",         "label": "Busy",           "kind": "retry",    "connect": False, "tone": "plain"},
-        {"key": "WRONG_NUMBER", "label": "Wrong number",   "kind": "final",    "connect": True,  "tone": "plain"},
-        {"key": "DISCONNECTED", "label": "Disconnected",   "kind": "final",    "connect": False, "tone": "plain"},
-        {"key": "DNC",          "label": "Do not call",    "kind": "dnc",      "connect": True,  "tone": "danger"},
-    ],
-    # Tokens: {first} {last} {company} {title} {followers} {agent} {city} {state}
-    # {?followers}…{/followers} renders only when the token has a value,
-    # {!followers}…{/followers} only when it does not. **bold** works.
-    "scripts": {
-        "opener": (
-            "Hi {first}, it's {agent}: I'll be quick. I saw **{company}**"
-            "{?followers} has {followers} followers on TikTok but isn't running Shop against them yet."
-            "{/followers}{!followers} isn't running TikTok Shop yet.{/followers}"
-            " That's what we do, end to end, for brands your size. Worth two minutes?"),
-        "voicemail": (
-            "Hi {first}, this is {agent}. I was calling about **{company}**'s TikTok Shop"
-            "{?followers}: you've got {followers} followers and no Shop running against them{/followers}."
-            " I'll try you again, or you can reach me back on this number. Thanks!"),
-        "gatekeeper": (
-            "Hi, it's {agent}: could you put me through to {first}? "
-            "It's about **{company}**'s TikTok channel. "
-            "If they're out: when's a good time to catch them, and is there a direct line?"),
-        "objections": [
-            {"q": "We already have an agency",
-             "a": "Makes sense. Are they running TikTok Shop specifically, or mostly paid and organic? "
-                  "Most agencies we meet don't touch Shop: we sit alongside them."},
-            {"q": "Not interested",
-             "a": "Fair enough. Quick one before I go: is it that Shop isn't a priority this year, "
-                  "or that you've looked at it and it didn't stack up?"},
-            {"q": "Send me an email",
-             "a": "Happy to. So I send the right thing: is the bigger question whether Shop would work "
-                  "for your products, or who would run it day to day?"},
-            {"q": "How much does it cost?",
-             "a": "Depends on catalogue size: most brands your size start on a performance-weighted "
-                  "retainer. Worth fifteen minutes to scope it properly?"},
-            {"q": "Bad time",
-             "a": "No problem: when's better, later today or tomorrow morning? I'll put it in."},
-        ],
-    },
+    "outcomes": [],
+    "scripts": {},
 }
+REQUIRED_OUTCOMES = {"CALLBACK", "DNC"}
 
 
 def load_dialer_config():
+    import yaml
+    with open(os.path.join(ROOT, "config.yaml")) as fh:
+        raw = yaml.safe_load(fh) or {}
     cfg = json.loads(json.dumps(DIALER_DEFAULTS))          # deep copy
-    disclosure = "This call is being recorded for quality and training purposes."
-    path = os.path.join(ROOT, "config.yaml")
-    try:
-        import yaml
-        with open(path) as fh:
-            raw = yaml.safe_load(fh) or {}
-    except ImportError:
-        raw = {}
-        print("  config    PyYAML not installed: using built-in dialer defaults")
-    except OSError:
-        raw = {}
-    user = raw.get("dialer") or {}
-    for key, value in user.items():
-        if key == "scripts" and isinstance(value, dict):
-            cfg["scripts"].update(value)
-        elif key in cfg and value is not None:
+    for key, value in (raw.get("dialer") or {}).items():
+        if value is not None:
             cfg[key] = value
-    disclosure = (raw.get("compliance") or {}).get("recording_disclosure") or disclosure
+    disclosure = (raw.get("compliance") or {}).get("recording_disclosure") or \
+        "This call is being recorded for quality and training purposes."
     cfg["disclosure"] = " ".join(str(disclosure).split())
+    cfg["campaign"] = (raw.get("campaign") or {}).get("name", "")
+    cfg["_raw"] = raw                                       # retry / numbers / compliance, server side only
 
-    keys = {o.get("key") for o in cfg["outcomes"]}
-    missing = {"INTERESTED", "CALLBACK", "DNC"} - keys
+    missing = REQUIRED_OUTCOMES - {o.get("key") for o in cfg["outcomes"]}
     if missing:
         raise SystemExit(f"config.yaml dialer.outcomes is missing required keys: {sorted(missing)}")
     return cfg
 
 
+def public_config():
+    """What the browser may see: everything except the raw file."""
+    return {k: v for k, v in DIALER.items() if not k.startswith("_")}
+
+
 DIALER = dict(DIALER_DEFAULTS)
 
 
-def number_tz_offset(phone):
-    """Best-effort UTC offset for a hand-typed number, from its area code.
-    None when phonenumbers isn't installed or the number is ambiguous."""
+def number_tz(phone):
+    """Best-effort (utc_offset_hours, iana_zone) for a hand-typed number, from
+    its area code. (None, "") when phonenumbers is missing or it is ambiguous."""
     try:
         import phonenumbers
         from phonenumbers import timezone as pntz
         from zoneinfo import ZoneInfo
         zones = pntz.time_zones_for_number(phonenumbers.parse(phone, None))
         if not zones or zones[0] == "Etc/Unknown":
-            return None
+            return None, ""
         off = datetime.now(ZoneInfo(zones[0])).utcoffset()
-        return off.total_seconds() / 3600.0 if off is not None else None
+        return (off.total_seconds() / 3600.0 if off is not None else None), zones[0]
     except Exception:
-        return None
+        return None, ""
 
 
 def clean_phone(raw):
@@ -416,18 +367,26 @@ def run_listprep(src, outdir):
 def lead_payload(lead):
     if not lead:
         return None
-    local = db.now() + timedelta(hours=lead.get("tz_offset") or -5)
+    offset = db.lead_offset(lead)
+    local = db.now() + timedelta(hours=offset)
     return {
         "phone": lead["phone"],
         "first": lead["first"], "last": lead["last"], "co": lead["company"],
         "title": lead["title"], "city": lead["city"], "state": lead["state"],
-        "tt": lead["tiktok_followers"], "size": lead["company_size"],
+        "size": lead.get("employees") or "", "process": lead.get("process") or "",
+        "oem": lead.get("oem") or "", "industry": lead.get("industry") or "",
+        "website": lead.get("website") or "", "linkedin_url": lead.get("linkedin_url") or "",
+        "li_status": lead.get("li_status") or "", "email": lead.get("email") or "",
+        "mobile": lead.get("mobile") or "", "is_mobile": bool(lead.get("is_mobile")),
+        "source": lead.get("source") or "", "dm_name": lead.get("dm_name") or "",
+        "gatekeeper_name": lead.get("gatekeeper_name") or "",
+        "lead_notes": lead.get("lead_notes") or "",
         "rank": lead["rank"], "attempts": lead["attempts"],
-        "tz_offset": lead.get("tz_offset", -5),
+        "tz_offset": offset, "tz_name": lead.get("tz_name") or "",
         "last_disposition": lead["last_disposition"],
         "callback_at": lead["callback_at"],
         "local_time": local.strftime("%-I:%M%p").lower(),
-        "in_window": db.in_window(lead.get("tz_offset"), callback=True),
+        "in_window": db.in_window(offset, callback=True),
         "list_id": lead.get("list_id") or "",
         "status": lead.get("status") or "",
         "history": db.history(lead["phone"]),
@@ -529,7 +488,7 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
         if route == "/api/config":
-            return self._json(dict(DIALER, caller_id=CONFIG["caller_id"],
+            return self._json(dict(public_config(), caller_id=CONFIG["caller_id"],
                                    live=bool(twilio_token("probe")),
                                    windows={"weekday": db.WINDOW_WEEKDAY,
                                             "weekend": db.WINDOW_WEEKEND,
@@ -646,8 +605,8 @@ class Handler(BaseHTTPRequestHandler):
             phone = clean_phone(data.get("phone", ""))
             if not phone:
                 return self._json({"error": "Enter a 10-digit US or Canadian number."}, 400)
-            tz = number_tz_offset(phone) if route == "/api/manual" else None
-            lead, reason = db.checkout_specific(phone, self._agent(data), tz_offset=tz)
+            tz, tz_name = number_tz(phone) if route == "/api/manual" else (None, "")
+            lead, reason = db.checkout_specific(phone, self._agent(data), tz_offset=tz, tz_name=tz_name)
             if reason:
                 return self._json({"error": reason}, 409)
             return self._json({"ok": True, "lead": lead_payload(lead),
@@ -768,6 +727,11 @@ def main():
         else:
             print(f"  list      no prepped file for list id {args.list_id} under out/ (run listprep.py first)")
     CONFIG["caller_id"] = args.caller_id
+
+    simulator = not twilio_token("probe")
+    if simulator and db.lead_count() == 0:
+        added, _ = db.import_list_csv(os.path.join(HERE, "demo_leads.csv"))
+        print(f"  demo      empty database in simulator mode: seeded {added} sample shops")
 
     s = db.stats()
     print(f"  db        {db.DB_PATH}")
