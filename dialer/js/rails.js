@@ -193,10 +193,56 @@ export function followModal(id) {
       if (d.error) { $("ft-err").textContent = d.error; return; }
       S.data.bookings = d.bookings || [];
       actions.renderStats(d.stats);
-      closeModal(); refreshCalls(); emit("bookings");
+      closeModal(); refreshCalls(); renderBookings();
       toast("success", "Saved. The funnel is updated.");
     });
   });
+}
+
+/* -------------------------------------------------------------- bookings -- */
+
+export function refreshBookings() {
+  return api("/api/bookings").then((d) => { S.data.bookings = d.bookings || []; renderBookings(); }).catch(() => {});
+}
+
+function renderBookings() {
+  const all = S.data.bookings || [];
+  const need = all.filter((b) => b.needs_status), up = all.filter((b) => b.upcoming), done = all.filter((b) => !b.upcoming && !b.needs_status);
+  const group = (title, list) => list.length ? '<div class="group-h"><span class="eyebrow">' + title + '</span><span class="muted" style="font-size:12px">' + list.length + "</span></div>" +
+    list.map((b) => bookingCard(b).replace('<span class="row-actions">', '<span class="row-actions"><button class="btn sm quiet" data-mail="' + b.id + '" title="Copy the confirmation email">' + icon("mail", "sm") + "</button>")).join("") : "";
+  $("l-bookings").innerHTML = group("Needs a result", need) + group("Upcoming", up) + group("Done", done.slice(0, 40)) ||
+    note("No booked calls yet", "Save a call as Booked and it shows here. Afterwards mark show, no-show or sale, and the funnel credits the day you dialed.");
+  $("n-book").textContent = need.length || "";
+}
+
+/* --------------------------------------------------------------- numbers -- */
+
+let spamUrls = [];
+export function refreshNumbers() {
+  return api("/api/numbers").then((d) => { S.data.numbers = d.numbers || []; spamUrls = d.spam_check_urls || []; renderNumbers(); }).catch(() => {});
+}
+
+function renderNumbers() {
+  const list = S.data.numbers || [], t = S.cfg.targets || {};
+  let alerts = 0;
+  $("l-numbers").innerHTML = list.map((n) => {
+    const rate = n.pickup_rate_7d, pct = rate == null ? "-" : Math.round(rate * 100) + "%";
+    const tone = n.parked ? "danger" : n.spam_suspect ? "warn" : rate != null && n.dials_7d >= 50 ? "good" : "";
+    if (n.parked || n.spam_suspect) alerts++;
+    const ten = n.number.replace(/\D/g, "").slice(-10);
+    return '<div class="row card numcard"><span class="dot" style="color:var(--' + (tone === "danger" ? "danger" : tone === "warn" ? "warn" : "text-3") + ')">' + icon("hash") + "</span>" +
+      '<span class="main"><span class="t1 num">' + esc(fmtPhone(n.number)) + '</span><span class="t2">' + esc([n.label, n.area_code, n.state].filter(Boolean).join(" · ")) + "</span></span>" +
+      '<span class="meta"><span class="num">' + n.used_today + " / " + n.cap + "</span>today</span>" +
+      '<span class="meterline"><i class="' + (n.used_today >= n.cap ? "hot" : "") + '" style="width:' + Math.min(100, n.used_today / n.cap * 100) + '%"></i></span>' +
+      '<span class="facts"><span>7-day pickup <b>' + pct + "</b> on <b>" + n.dials_7d + "</b> dials</span>" +
+      (n.warming ? "<span>Warm-up day <b>" + n.warmup_day + "</b> of " + n.warmup_days + "</span>" : "<span>Warm</span>") + "</span>" +
+      '<span class="row-actions">' +
+      (n.parked ? '<span class="pill danger" title="' + esc(n.park_reason) + '">Parked</span>' : n.spam_suspect ? '<span class="pill warn" title="Under ' + Math.round((t.pickup || 0.2) * 100) + '% pickup across 50+ dials">Likely spam-labelled</span>' : "") +
+      spamUrls.map((u) => '<a class="btn sm" target="_blank" rel="noopener noreferrer" data-copynum="' + ten + '" href="' + esc(String(u.url).replace("{number}", ten)) + '">' + esc(u.label) + icon("external", "sm") + "</a>").join("") +
+      '<button class="btn sm quiet" data-park="' + esc(n.number) + '" data-to="' + (n.parked ? 0 : 1) + '">' + (n.parked ? "Unpark" : "Park") + "</button></span>" +
+      (n.parked && n.park_reason ? '<span class="quote">' + esc(n.park_reason) + "</span>" : "") + "</div>";
+  }).join("") + note("How this works", "Area code match, then same state, then round robin. A number is parked automatically when its 7-day pickup rate falls under 15% across 100+ dials. Checking a number copies it so you can paste it into the lookup.");
+  $("n-num").textContent = alerts || "";
 }
 
 /* ---------------------------------------------------------------- inbox -- */
@@ -240,7 +286,8 @@ function renderInbox() {
 
 /* --------------------------------------------------------------- wiring -- */
 
-const REFRESH = { queue: refreshQueue, callbacks: refreshCallbacks, calls: refreshCalls, inbox: refreshInbox };
+const REFRESH = { queue: refreshQueue, callbacks: refreshCallbacks, bookings: refreshBookings, calls: refreshCalls,
+                  inbox: refreshInbox, numbers: refreshNumbers };
 
 export function wireRails() {
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => selectTab(t.getAttribute("data-tab"))));
@@ -258,6 +305,15 @@ export function wireRails() {
         S.data.callbacks = d.callbacks || []; renderCallbacks(); actions.renderStats(d.stats); refreshQueue();
         toast("info", "Callback removed. The lead is back in the normal queue.");
       });
+    } else if ((b = e.target.closest("[data-mail]"))) {
+      const bk = (S.data.bookings || []).find((x) => String(x.id) === b.getAttribute("data-mail"));
+      if (bk) actions.copyBookingEmail(bk);
+    } else if ((b = e.target.closest("[data-park]"))) {
+      api("/api/numbers/park", { number: b.getAttribute("data-park"), parked: b.getAttribute("data-to") === "1", agent: S.agent }).then((d) => {
+        S.data.numbers = d.numbers || []; renderNumbers(); actions.refreshStats();
+      });
+    } else if ((b = e.target.closest("[data-copynum]"))) {
+      if (navigator.clipboard) navigator.clipboard.writeText(b.getAttribute("data-copynum")).catch(() => {});
     } else if ((b = e.target.closest("[data-vm]"))) {
       const sid = b.getAttribute("data-vm"), a = $("vm-audio");
       a.hidden = false; a.src = "/api/voicemail/" + sid + ".mp3"; a.play().catch(() => {});
@@ -267,6 +323,7 @@ export function wireRails() {
     }
   });
 
-  on("saved", () => { refreshCalls(); refreshCallbacks(); });
+  on("saved", () => { refreshCalls(); refreshCallbacks(); refreshBookings(); if (activeTab === "numbers") refreshNumbers(); });
+  on("bookings", renderBookings);
   on("minute", () => { if (activeTab === "callbacks") renderCallbacks(); });
 }

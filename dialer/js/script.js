@@ -290,6 +290,9 @@ export function wireScript() {
     if ((b = e.target.closest("[data-go]"))) goStep(b.getAttribute("data-go"));
     else if ((b = e.target.closest("[data-branch]"))) takeBranch(+b.getAttribute("data-branch"));
   });
+  on("call", () => {                                 // keep the Qualify / Book inputs in step with the lead pane and wrap-up
+    $("treebox").querySelectorAll("[data-bind]").forEach((el) => { if (document.activeElement !== el) el.value = S.call[el.getAttribute("data-bind")] || ""; });
+  });
   $("treebox").addEventListener("input", (e) => {
     const bind = e.target.getAttribute && e.target.getAttribute("data-bind");
     if (bind) { S.call[bind] = e.target.value.trim ? e.target.value.trim() : e.target.value; emit("call"); }

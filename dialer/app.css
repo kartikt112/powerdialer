@@ -274,16 +274,18 @@ kbd.onfill { background: rgba(255, 255, 255, .2); border-color: transparent; col
 .right { background: var(--surface); border-left: 1px solid var(--line); padding: 18px; display: flex; flex-direction: column; gap: 22px; }
 
 /* ---------------------------------------------------------- left rail -- */
-.tabs { flex: none; display: flex; padding: 8px 8px 0; gap: 2px; border-bottom: 1px solid var(--line); }
+.tabs { flex: none; display: flex; padding: 6px 6px 0; gap: 0; border-bottom: 1px solid var(--line); }
 .tab {
-  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; height: 36px;
-  border: none; background: none; color: var(--text-3); font-size: 12.5px; font-weight: 500;
+  flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  height: 46px; border: none; background: none; color: var(--text-3); font-size: 10.5px; font-weight: 500;
   border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 6px 6px 0 0;
 }
 .tab:hover { color: var(--text); background: var(--hover); }
 .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.tab .ic { width: 15px; height: 15px; }
+.tab .count { position: absolute; top: 2px; left: calc(50% + 10px); }
 .tab .count {
-  font: 600 10.5px/1 var(--mono); min-width: 17px; padding: 3px 5px; border-radius: 999px;
+  font: 600 9.5px/1 var(--mono); min-width: 15px; padding: 2px 4px; border-radius: 999px;
   background: var(--line); color: var(--text-2); text-align: center;
 }
 .tab .count.hot { background: var(--danger); color: #fff; }
@@ -356,6 +358,9 @@ button.row:hover:not(:disabled) { background: var(--hover); }
 .localtime.closed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent);
                     background: color-mix(in srgb, var(--danger) 9%, transparent); }
 .localtime.closed b { color: var(--danger); }
+.localtime.power { border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.localtime.power span:last-child { color: var(--good); }
+.callout .eyebrow { display: block; margin-bottom: 3px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .links { display: flex; gap: 4px; flex-wrap: wrap; margin-left: -9px; }
 
@@ -370,6 +375,13 @@ button.row:hover:not(:disabled) { background: var(--hover); }
 .notes-box .row-h { display: flex; align-items: center; justify-content: space-between; }
 .notes-box .saved { font-size: 11.5px; color: var(--text-3); transition: opacity .2s; }
 
+.discovery { display: grid; grid-template-columns: minmax(0, 2.4fr) minmax(0, .8fr) minmax(0, 1.3fr); gap: 10px; }
+@media (max-width: 860px) { .discovery { grid-template-columns: 1fr 1fr; } .discovery .d-pain { grid-column: 1 / -1; } }
+.numcard .meterline { grid-column: 1 / -1; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.numcard .meterline i { display: block; height: 100%; background: var(--accent); }
+.numcard .meterline i.hot { background: var(--danger); }
+.numcard .facts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-3); }
+.numcard .facts b { color: var(--text-2); font-family: var(--mono); font-weight: 600; }
 .wrap { display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: var(--r-lg);
         border: 1px solid color-mix(in srgb, var(--violet) 40%, var(--line));
         background: color-mix(in srgb, var(--violet) 5%, var(--surface)); animation: rise .22s var(--ease); }

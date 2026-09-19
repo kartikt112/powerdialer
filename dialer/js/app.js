@@ -10,11 +10,11 @@ import { S, on, emit, actions, outcome, busy } from "./state.js";
 import { api, withAgent } from "./api.js";
 import { toast, say, banner, modal, closeModal, closeMenus, menuOpen, toggleMenu, copyText } from "./ui.js";
 import { simulatorCarrier, twilioCarrier } from "./carrier.js";
-import { renderScript, renderTimeline, wireScript, scriptKey, openObjections, closeObjections, objectionsOpen, setFlow, goStep } from "./script.js";
+import { renderScript, renderTimeline, wireScript, scriptKey, openObjections, closeObjections, objectionsOpen, setFlow, emailFor, copyEmail } from "./script.js";
 import { renderOutcomes, setSuggested, resetWrap, wrapKey, getWrapMode, backToOutcomes, undo, wireWrap, draftKey, submitOutcome, freshCall } from "./wrap.js";
 import { refreshStats, statsSheet, wireFunnel } from "./funnel.js";
 import { sessionStartModal, sessionEndCard } from "./session.js";
-import { selectTab, refreshQueue, refreshCallbacks, refreshCalls, refreshInbox, wireRails } from "./rails.js";
+import { selectTab, refreshQueue, refreshCallbacks, refreshCalls, refreshInbox, refreshBookings, refreshNumbers, wireRails } from "./rails.js";
 import { agentPicker, manualModal, shortcutsModal, logModal, settingsModal, applyTheme, pickList, uploadList } from "./modals.js";
 
 let carrier = simulatorCarrier();
@@ -79,14 +79,23 @@ function inHard(date, off) {
   return h >= w[0] && h < w[1];
 }
 
+const hm = (t) => { const p = String(t).split(":"); return +p[0] + (+p[1] || 0) / 60; };
+function tierOf(date, off) {
+  const w = S.cfg.windows, h = localHour(date, off);
+  if (!inHard(date, off)) return null;
+  for (const name of ["power", "secondary"]) if ((w[name] || []).some((s) => h >= hm(s[0]) && h < hm(s[1]))) return name;
+  return "gap";                                           // inside the day, outside every window: lunch and the edges
+}
+
 function renderLocal() {
   const l = S.cur;
   if (!l) return;
-  const now = new Date(), open = !S.cfg.windows.enforced || inHard(now, l.tz_offset);
+  const now = new Date(), tier = tierOf(now, l.tz_offset), open = !S.cfg.windows.enforced || tier !== null;
   const place = l.city ? l.city + (l.state ? ", " + l.state : "") : (l.state || "");
-  $("c-local").className = "localtime" + (open ? "" : " closed");
+  const label = { power: "power window", secondary: "secondary window", gap: "between windows, callbacks only" }[tier] || "outside calling hours";
+  $("c-local").className = "localtime" + (open ? "" : " closed") + (tier === "power" ? " power" : "");
   $("c-local").innerHTML = icon(open ? "clock" : "alert", "sm") + "<b>" + leadClock(now, l.tz_offset) + "</b>" +
-    (place ? "<span>" + esc(place) + "</span>" : "<span>their time</span>") + (open ? "" : "<span>· outside calling hours</span>");
+    "<span>" + esc((l.zone ? l.zone + " · " : "") + (place || "their time")) + "</span><span>· " + label + "</span>";
 }
 
 function renderLead() {
@@ -114,10 +123,13 @@ function renderLead() {
   renderLocal();
 
   const chips = [];
+  if (l.caller_id) chips.push('<span class="pill" title="Local presence: ' + esc(l.caller_id_reason || "") + '">' + icon("phone", "sm") + "Calls from <b>" + esc(fmtPhone(l.caller_id)) + "</b>" + (l.caller_id_reason ? " · " + esc(l.caller_id_reason) : "") + "</span>");
   if (l.process) chips.push('<span class="pill info">' + icon("factory", "sm") + "<b>" + esc(l.process) + "</b></span>");
   if (l.oem) chips.push('<span class="pill">Supplies <b>' + esc(l.oem) + "</b></span>");
   if (l.size) chips.push('<span class="pill"><b>' + esc(l.size) + "</b> employees</span>");
-  if (l.li_status === "accepted") chips.push('<span class="pill good">LinkedIn accepted</span>');
+  if (l.ppap_per_year) chips.push('<span class="pill"><b>' + esc(l.ppap_per_year) + "</b> PPAPs / year</span>");
+  if (l.li_status) chips.push('<span class="pill' + (l.li_status === "accepted" ? " good" : "") + '">LinkedIn ' + esc(l.li_status) + "</span>");
+  if ((l.tags || []).length) l.tags.forEach((t) => chips.push('<span class="pill warn">' + esc(t.replace(/_/g, " ")) + "</span>"));
   $("c-chips").innerHTML = chips.join("");
   $("c-chips").hidden = !chips.length;
 
@@ -125,17 +137,20 @@ function renderLead() {
   if (l.co) {
     if (l.website) links.push(["Website", /^https?:/.test(l.website) ? l.website : "https://" + l.website]);
     links.push(["Google", "https://www.google.com/search?q=" + q(l.co + " PPAP")]);
-    links.push(["LinkedIn", "https://www.linkedin.com/search/results/all/?keywords=" + q((name + " " + l.co).trim())]);
+    links.push(["LinkedIn", l.linkedin_url || "https://www.linkedin.com/search/results/all/?keywords=" + q((name + " " + l.co).trim())]);
+    links.push(["Thomasnet", "https://www.google.com/search?q=" + q('site:thomasnet.com "' + l.co + '"')]);
   }
   $("c-links").innerHTML = links.map((x) =>
     '<a class="btn sm quiet" target="_blank" rel="noopener noreferrer" href="' + esc(x[1]) + '">' + esc(x[0]) + icon("external", "sm") + "</a>").join("");
   $("c-links").hidden = !links.length;
 
   const last = (l.history || []).find((h) => h.notes);
-  $("c-note").hidden = !last;
+  const painLine = l.pain ? '<div><span class="eyebrow">Pain, last time</span><q>' + esc(l.pain) + "</q></div>" : "";
+  $("c-note").hidden = !last && !painLine;
+  if (!last && painLine) $("c-note").innerHTML = painLine;
   if (last) {
     $("c-note").innerHTML = "<div><q>" + esc(last.notes) + '</q><span class="by">' + esc(last.agent || "agent") +
-      " · " + esc(outcome(last.disposition).label) + " · " + esc((last.at || "").slice(0, 10)) + "</span></div>";
+      " · " + esc(outcome(last.disposition).label) + " · " + esc((last.at || "").slice(0, 10)) + "</span>" + (painLine ? '<div style="margin-top:8px">' + painLine + "</div>" : "") + "</div>";
   }
   if (l.caller_id) {
     $("cid").textContent = fmtPhone(l.caller_id);
@@ -165,6 +180,14 @@ function renderEmpty(kind, text) {
   $("e-title").textContent = title;
   $("e-text").textContent = text || "";
   $("e-acts").innerHTML = acts;
+}
+
+/* Discovery fields under the notes mirror the per-call capture, which the
+   script's Qualify step and the wrap-up also edit. */
+function syncDiscovery() {
+  document.querySelectorAll("#discovery [data-call]").forEach((el) => {
+    if (document.activeElement !== el) el.value = (S.call && S.call[el.getAttribute("data-call")]) || "";
+  });
 }
 
 /* ======================================================== state machine */
@@ -373,6 +396,7 @@ function loadLead(lead, opts) {
   $("notes").value = opts.notes != null ? opts.notes : store.get(draftKey(lead.phone), "");
   $("notes-saved").textContent = opts.notes == null && $("notes").value ? "Draft restored" : "";
   renderLead();
+  syncDiscovery();
   if (opts.state) { setState(opts.state); return; }
   setState("READY");
   $("lead-pane").scrollTop = 0;
@@ -632,6 +656,11 @@ function declineIncoming() {
 
 /* ============================================================= keyboard */
 
+function utcToLeadLocal(stamp, off) {
+  const d = stamp && new Date(String(stamp).replace(" ", "T") + "Z");
+  return d ? new Date(d.getTime() + (off == null ? -5 : off) * 3600000).toISOString().slice(0, 16) : "";
+}
+
 function copyNumber() {
   if (S.cur) copyText(S.cur.phone, "Copied <b>" + esc(fmtPhone(S.cur.phone)) + "</b>");
 }
@@ -773,6 +802,13 @@ function wire() {
     }, 350);
   });
 
+  $("discovery").addEventListener("input", (e) => {
+    const k = e.target.getAttribute("data-call");
+    if (k) { S.call[k] = e.target.value.trim(); emit("call"); }
+  });
+  $("discovery").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
+  on("call", syncDiscovery);
+
   $("modal").addEventListener("click", (e) => { if (e.target === $("modal") || e.target.closest("[data-close]")) closeModal(); });
 
   window.addEventListener("beforeunload", (e) => {
@@ -787,7 +823,10 @@ function wire() {
 Object.assign(actions, {
   openLead, nextLead, loadLead, renderStats, afterSave, cancelCountdown, refreshQueue,
   autodialDelay, applyAudio, carrier: () => carrier, dial, hangup,
-  openObjections,
+  openObjections, refreshStats,
+  copyBookingEmail: (b) => copyEmail(emailFor("booked_confirm",
+    { first: b.first, last: b.last, co: b.company, email: b.email, dm_name: b.dm_name, tz_offset: b.tz_offset },
+    { pain: b.pain, dm_name: b.dm_name, email: b.email, booked_for_local: utcToLeadLocal(b.booked_for, b.tz_offset) })),
   submitOutcome
 });
 
@@ -817,7 +856,7 @@ function boot() {
     if (S.cfg.live) api(withAgent("/api/token")).then((d) => { if (d && d.token) attachCarrier(d.token); else simMode(); }).catch(simMode);
     else simMode();
     nextLead();
-    refreshCallbacks(); refreshCalls(); refreshInbox();
+    refreshCallbacks(); refreshCalls(); refreshInbox(); refreshBookings(); refreshNumbers();
     setInterval(() => {
       if (document.hidden) return;
       refreshStats();

@@ -80,10 +80,12 @@
 
   <aside class="rail" id="rail" aria-label="Queue, callbacks, calls and inbox">
     <div class="tabs" role="tablist">
-      <button class="tab" role="tab" data-tab="queue" aria-selected="true"><span>Queue</span><span class="count" id="n-queue"></span></button>
-      <button class="tab" role="tab" data-tab="callbacks" aria-selected="false"><span>Callbacks</span><span class="count" id="n-cb"></span></button>
-      <button class="tab" role="tab" data-tab="calls" aria-selected="false"><span>Calls</span><span class="count" id="n-calls"></span></button>
-      <button class="tab" role="tab" data-tab="inbox" aria-selected="false"><span>Inbox</span><span class="count hot" id="n-inbox"></span></button>
+      <button class="tab" role="tab" data-tab="queue" aria-selected="true" title="Queue"><span data-ic="list"></span><span>Queue</span><span class="count" id="n-queue"></span></button>
+      <button class="tab" role="tab" data-tab="callbacks" aria-selected="false" title="Callbacks"><span data-ic="clock"></span><span>Callbacks</span><span class="count" id="n-cb"></span></button>
+      <button class="tab" role="tab" data-tab="bookings" aria-selected="false" title="Booked calls"><span data-ic="calendar"></span><span>Bookings</span><span class="count hot" id="n-book"></span></button>
+      <button class="tab" role="tab" data-tab="calls" aria-selected="false" title="Today's calls"><span data-ic="activity"></span><span>Calls</span><span class="count" id="n-calls"></span></button>
+      <button class="tab" role="tab" data-tab="inbox" aria-selected="false" title="Missed calls and voicemails"><span data-ic="inbox"></span><span>Inbox</span><span class="count hot" id="n-inbox"></span></button>
+      <button class="tab" role="tab" data-tab="numbers" aria-selected="false" title="Caller ID health"><span data-ic="hash"></span><span>Numbers</span><span class="count hot" id="n-num"></span></button>
     </div>
 
     <section class="panel" id="p-queue" role="tabpanel">
@@ -97,6 +99,14 @@
 
     <section class="panel" id="p-callbacks" role="tabpanel" hidden>
       <div class="list" id="l-callbacks"></div>
+    </section>
+
+    <section class="panel" id="p-bookings" role="tabpanel" hidden>
+      <div class="list" id="l-bookings"></div>
+    </section>
+
+    <section class="panel" id="p-numbers" role="tabpanel" hidden>
+      <div class="list" id="l-numbers"></div>
     </section>
 
     <section class="panel" id="p-calls" role="tabpanel" hidden>
@@ -138,6 +148,12 @@
               <span class="saved" id="notes-saved"></span>
             </div>
             <textarea class="field" id="notes" rows="3" placeholder="What was said, who to ask for, objections…   (press n to jump here, Esc to leave)"></textarea>
+          </div>
+
+          <div class="discovery" id="discovery">
+            <div class="d-pain"><label class="lbl" for="d-pain">Pain, in their words</label><input class="field" id="d-pain" data-call="pain" maxlength="300" autocomplete="off" placeholder="Mirror it back, then type it here"></div>
+            <div><label class="lbl" for="d-ppap">PPAPs / year</label><input class="field num" id="d-ppap" data-call="ppap_per_year" maxlength="12" autocomplete="off"></div>
+            <div><label class="lbl" for="d-oem">OEMs</label><input class="field" id="d-oem" data-call="oem" maxlength="80" autocomplete="off"></div>
           </div>
 
           <section class="wrap" id="wrap" hidden aria-label="Wrap-up">
