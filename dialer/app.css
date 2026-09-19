@@ -177,6 +177,15 @@ label.lbl { display: block; font-size: 12px; font-weight: 500; color: var(--text
 body[data-state="dialing"] .lamp i, body[data-state="live"] .lamp i { animation: pulse 1.3s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 .session-clock { color: var(--text-2); font-size: 12.5px; }
+.session-eta { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.session-eta b { color: var(--text); }
+.window-line { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; color: var(--text-3);
+               padding-left: 14px; border-left: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.window-line b { color: var(--text-2); font-weight: 600; }
+.window-line.power b { color: var(--good); }
+.window-line.secondary b { color: var(--accent); }
+.window-line.closed b { color: var(--warn); }
+.window-line:empty { display: none; }
 .menu-wrap { position: relative; }
 
 .kpis { display: flex; align-items: stretch; gap: 4px; margin-left: auto; min-width: 0; }
@@ -596,7 +605,7 @@ details.obj p { padding: 0 12px 12px; font-size: 14px; line-height: 1.6; color: 
   .rail { position: fixed; z-index: 60; top: 56px; bottom: 0; left: 0; width: min(340px, 92vw);
           transform: translateX(-102%); transition: transform .24s var(--ease); box-shadow: var(--shadow); }
   body.rail-open .rail { transform: none; }
-  .brand span, .session-clock, .avatar span { display: none; }
+  .brand span, .session-clock, .session-eta, .window-line, .avatar span { display: none; }
   .session { padding-left: 8px; }
   .lamp { min-width: 0; }
   .kpis { overflow-x: auto; scrollbar-width: none; }

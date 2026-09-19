@@ -13,6 +13,7 @@ import { simulatorCarrier, twilioCarrier } from "./carrier.js";
 import { renderScript, renderTimeline, setScriptTab, wireScript } from "./script.js";
 import { renderOutcomes, setSuggested, resetWrap, wrapKey, getWrapMode, backToOutcomes, undo, wireWrap, draftKey, submitOutcome, freshCall } from "./wrap.js";
 import { refreshStats, statsSheet, wireFunnel } from "./funnel.js";
+import { sessionStartModal, sessionEndCard } from "./session.js";
 import { selectTab, refreshQueue, refreshCallbacks, refreshCalls, refreshInbox, wireRails } from "./rails.js";
 import { agentPicker, manualModal, shortcutsModal, logModal, settingsModal, applyTheme, pickList, uploadList } from "./modals.js";
 
@@ -26,19 +27,48 @@ const cd = { left: 0, timer: null };
 function renderStats(s) {
   if (!s) return;
   S.stats = s;
-  $("k-dials").innerHTML = s.dials_today + "<small>/ " + s.cap + "</small>";
-  $("k-dials").className = s.dials_today >= s.cap ? "over" : "";
-  $("k-dials").title = "Dials on this caller ID today. Cap " + s.cap + ".";
+  renderCap();
+  renderWindowLine(s.window);
   const late = s.callbacks_overdue || 0;
   $("k-cb").innerHTML = (late || s.callbacks_due) + "<small>" + (late ? "overdue" : "due") + "</small>";
   $("k-cb").className = late ? "alert" : "";
   $("n-queue").textContent = s.queue == null ? "" : s.queue;
   $("n-calls").textContent = (s.today && s.today.dials) || "";
-  if (s.dials_today >= s.cap) {
-    banner("danger", "<b>Daily cap reached on this number.</b> The queue is closed until tomorrow. " +
-           "Pushing past " + s.cap + " dials a day is how numbers get labelled as spam.");
-  }
+  const caps = s.caps || [], open = caps.filter((c) => c.used < c.cap && (s.parked || []).indexOf(c.number) < 0);
+  if (caps.length && !open.length) {
+    banner("danger", "<b>Every caller ID is capped or parked for today.</b> The queue is closed until tomorrow. " +
+           "Pushing past the cap is how numbers get labelled as spam.");
+  } else if ((s.parked || []).length) {
+    banner("warn", "<b>" + s.parked.length + " caller ID" + (s.parked.length > 1 ? "s are" : " is") +
+           " parked</b> for a low pickup rate. Check the Numbers tab before adding more dials to it.");
+  } else banner("", "");
   emit("stats", s);
+}
+
+/* Cap meter for the caller ID the current lead will see. */
+function renderCap() {
+  const s = S.stats; if (!s) return;
+  const caps = s.caps || [];
+  const mine = (S.cur && caps.find((c) => c.number === S.cur.caller_id)) || caps[0];
+  if (!mine) return;
+  $("k-dials").innerHTML = mine.used + "<small>/ " + mine.cap + "</small>";
+  $("k-dials").className = mine.used >= mine.cap ? "over" : "";
+  $("k-dials").title = "Dials today from " + fmtPhone(mine.number) + ". Cap " + mine.cap + (mine.cap < 100 ? " while it warms up." : ".");
+}
+
+function renderWindowLine(w) {
+  const el = $("window-line");
+  if (!w) { el.textContent = ""; return; }
+  if (!w.enforced) { el.className = "window-line"; el.innerHTML = icon("info", "sm") + "Simulator: calling windows not enforced · <b>" + w.eligible + "</b> leads eligible"; return; }
+  if (w.open) {
+    el.className = "window-line " + w.tier;
+    el.innerHTML = icon("clock", "sm") + "Now dialing: <b>" + w.zones.map((z) => esc(z.label)).join(" + ") + " " + w.tier + " window</b>, " +
+      w.eligible + " lead" + (w.eligible === 1 ? "" : "s") + " eligible";
+  } else {
+    el.className = "window-line closed";
+    el.innerHTML = icon("clock", "sm") + (w.next_zone ? "Windows closed. Next: <b>" + esc(w.next_zone) + " " + esc(w.next_tier || "") + "</b> " + esc(w.next_local || "") + " their time"
+      : "No lead is inside a calling window");
+  }
 }
 
 /* ================================================================= lead */
@@ -67,6 +97,7 @@ function renderLead() {
 
   const tags = [];
   if (S.inbound) tags.push('<span class="pill good">' + icon("phone", "sm") + "Inbound</span>");
+  if (l.vm_allowed === false && !S.inbound) tags.push('<span class="pill warn" title="Messages go out on tries ' + (S.cfg.voicemail_attempts || []).join(", ") + ' only">No voicemail this try</span>');
   if (l.list_id === "manual") tags.push('<span class="pill">Manual dial</span>');
   if (l.rank) tags.push('<span class="pill' + (l.rank >= 80 ? " good" : "") + '">Rank <b>' + esc(l.rank) + "</b></span>");
   tags.push(l.attempts ? '<span class="pill">Attempt <b>' + (l.attempts + 1) + "</b> of " + S.cfg.max_attempts + "</span>"
@@ -106,6 +137,11 @@ function renderLead() {
     $("c-note").innerHTML = "<div><q>" + esc(last.notes) + '</q><span class="by">' + esc(last.agent || "agent") +
       " · " + esc(outcome(last.disposition).label) + " · " + esc((last.at || "").slice(0, 10)) + "</span></div>";
   }
+  if (l.caller_id) {
+    $("cid").textContent = fmtPhone(l.caller_id);
+    $("cid").parentNode.title = "Chosen for this lead by " + (l.caller_id_reason || "default") + ".";
+  }
+  renderCap();
   emit("lead", l);
 }
 
@@ -147,7 +183,9 @@ function setState(s) {
   $("b-skip").disabled = !ready;
   $("b-mute").disabled = !inCall;
   $("b-keypad").disabled = !inCall;
-  $("b-vmdrop").disabled = !inCall || S.inbound;
+  const vmOk = !S.cur || S.cur.vm_allowed !== false;
+  $("b-vmdrop").disabled = !inCall || S.inbound || !vmOk;
+  $("b-vmdrop").title = vmOk ? "Play your recorded voicemail and move on" : "No voicemail on this attempt. Messages go out on tries " + (S.cfg.voicemail_attempts || [1, 3, 5]).join(", ") + " only.";
   if (!inCall) { setMuted(false); toggleKeypad(false); $("quality").hidden = true; }
   $("rec").hidden = !(inCall && S.cfg && S.cfg.recording);
 
@@ -175,6 +213,7 @@ setInterval(() => {
     if (ss.paused) ss.pauseSec++; else ss.activeSec++;
     $("session-clock").textContent = ss.paused ? "paused " + fmtClock(ss.pauseSec) : fmtHMS(ss.activeSec);
   }
+  if (ss.on && ss.activeSec % 5 === 0) renderEta();
   emit("tick");
   if (new Date().getSeconds() === 0) { renderLocal(); emit("minute"); }
 }, 1000);
@@ -189,6 +228,21 @@ function renderSession() {
   $("pause-wrap").hidden = !(ss.on && !ss.paused);
   $("b-pause").innerHTML = (ss.pausePending ? "Pausing after call" : "Pause") + icon("chevron", "sm");
   $("session-clock").hidden = !ss.on;
+  $("session-eta").hidden = !ss.on;
+  renderEta();
+}
+
+/* "Time and a half": dials left x average seconds per dial x 1.5. */
+function renderEta() {
+  const ss = S.session;
+  if (!ss.on) return;
+  const left = Math.max(0, ss.targetDials - ss.dials);
+  const perDial = ss.dials >= 3 ? ss.activeSec / ss.dials : 45;
+  const byDials = left * perDial * 1.5, byClock = Math.max(0, ss.targetMinutes * 60 - ss.activeSec);
+  const eta = Math.min(byDials, byClock), m = Math.round(eta / 60);
+  $("session-eta").innerHTML = "<b>" + ss.dials + "</b>/" + ss.targetDials + " · " + esc(ss.script || "") +
+    " · ETA " + (m >= 60 ? Math.floor(m / 60) + "h " + (m % 60) + "m" : m + "m");
+  $("session-eta").title = "Estimate = dials left x average seconds per dial x 1.5, or the minutes target, whichever is sooner.";
 }
 
 const agentEvent = (event, reason) => api("/api/agent-event", { agent: S.agent, event, reason: reason || "" });
@@ -200,15 +254,23 @@ function autodialDelay() {
 
 function startSession() {
   const ss = S.session;
-  if (ss.on) return;
-  ss.on = true; ss.paused = null; ss.pausePending = null; ss.activeSec = 0;
-  ss.startedAt = toServer(new Date());
-  agentEvent("SESSION_START");
-  say("Session started: leads dial themselves after wrap-up");
-  toast("info", "<b>Session on.</b> Each lead dials itself " + autodialDelay() + "s after it loads. <kbd>esc</kbd> holds one.");
-  renderSession();
-  if (S.state === "READY" && S.cur && !S.picked) startCountdown();
-  else if (S.state === "IDLE") nextLead();
+  if (ss.on || modal.open) return;
+  sessionStartModal().then((opts) => {
+    if (!opts) return;
+    return api("/api/session/start", Object.assign({ agent: S.agent }, opts)).then((d) => {
+      ss.on = true; ss.paused = null; ss.pausePending = null; ss.activeSec = 0; ss.dials = 0;
+      ss.id = d.id; ss.script = d.script_version || opts.script_version;
+      ss.targetDials = opts.target_dials; ss.targetMinutes = opts.target_minutes;
+      ss.startedAt = toServer(new Date());
+      agentEvent("SESSION_START", ss.script);
+      say("Session started: " + ss.targetDials + " dials or " + ss.targetMinutes + " min, script " + esc(ss.script));
+      toast("info", "<b>Session on.</b> Each lead dials itself " + autodialDelay() + "s after it loads. <kbd>esc</kbd> holds one.");
+      renderSession();
+      emit("session");
+      if (S.state === "READY" && S.cur && !S.picked) startCountdown();
+      else if (S.state === "IDLE") nextLead();
+    });
+  });
 }
 
 function requestPause(reason) {
@@ -246,16 +308,27 @@ function resume() {
   if (S.state === "IDLE") nextLead(); else setState(S.state);
 }
 
-function endSession() {
+function endSession(why) {
   closeMenus();
   const ss = S.session;
   if (!ss.on) return;
   cancelCountdown();
   agentEvent("SESSION_END");
   say("Session ended after " + fmtHMS(ss.activeSec));
-  toast("info", "Session ended: " + fmtHMS(ss.activeSec) + " active. Dial by hand with <kbd>space</kbd>.");
-  ss.on = false; ss.paused = null; ss.pausePending = null;
+  const id = ss.id, active = ss.activeSec;
+  ss.on = false; ss.paused = null; ss.pausePending = null; ss.id = null;
   setState(S.state);
+  emit("session");
+  if (id) api("/api/session/end", { id, active_seconds: active, agent: S.agent }).then((d) => { if (!d.error) sessionEndCard(d, typeof why === "string" ? why : "You ended it."); });
+}
+
+/* Called after every save inside a session: count it, stop at the target. */
+function sessionTargetHit() {
+  const ss = S.session;
+  if (!ss.on) return "";
+  if (ss.dials >= ss.targetDials) return "Target of " + ss.targetDials + " dials reached.";
+  if (ss.activeSec >= ss.targetMinutes * 60) return ss.targetMinutes + " minutes are up.";
+  return "";
 }
 
 function startCountdown() {
@@ -310,7 +383,7 @@ function nextLead() {
   if (S.session.paused) { setState("IDLE"); renderEmpty("paused"); return; }
   clearTimeout(idleTimer);
   api(withAgent("/api/next")).then((d) => {
-    if (d.caller_id) $("cid").textContent = d.caller_id;
+    if (d.caller_id && !(d.lead && d.lead.caller_id)) $("cid").textContent = d.caller_id;
     renderStats(d.stats);
     if (d.lead) {
       loadLead(d.lead);
@@ -329,11 +402,11 @@ function nextLead() {
 }
 
 /* Hand-pick a lead: queue row, callback, call log, inbox, typed number. */
-function openLead(phone, route) {
+function openLead(phone, route, extra) {
   if (busy()) { toast("warn", "Finish this call first, then open that lead."); return Promise.resolve(false); }
   cancelCountdown();
   const release = S.cur && S.state === "READY" && S.cur.phone !== phone ? api("/api/release", { phone: S.cur.phone }) : Promise.resolve();
-  return release.then(() => api(route || "/api/checkout", { phone, agent: S.agent })).then((d) => {
+  return release.then(() => api(route || "/api/checkout", Object.assign({ phone, agent: S.agent }, extra || {}))).then((d) => {
     if (d.error || !d.lead) { toast("error", esc(d.error || "Could not open that lead.")); if (!S.cur) nextLead(); return false; }
     renderStats(d.stats);
     loadLead(d.lead, { handPicked: true });
@@ -357,6 +430,9 @@ function skip() {
 function afterSave() {
   S.cur = null; S.inbound = false; $("notes").value = ""; $("notes-saved").textContent = "";
   const ss = S.session;
+  if (ss.on) { ss.dials++; renderEta(); }
+  const hit = sessionTargetHit();
+  if (hit) { endSession(hit); setState("IDLE"); nextLead(); return; }
   if (ss.pausePending) doPause(ss.pausePending);
   else if (ss.paused) { setState("IDLE"); renderEmpty("paused"); }
   else { setState("IDLE"); nextLead(); }
@@ -704,6 +780,7 @@ function wire() {
 Object.assign(actions, {
   openLead, nextLead, loadLead, renderStats, afterSave, cancelCountdown, refreshQueue,
   autodialDelay, applyAudio, carrier: () => carrier, dial, hangup,
+  openObjections: () => setScriptTab("objections"),
   submitOutcome
 });
 

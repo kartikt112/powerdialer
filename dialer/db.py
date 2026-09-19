@@ -15,31 +15,25 @@ import os
 import sqlite3
 
 import funnel
+import policy
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("DATA_DIR")
 DB_PATH = os.path.join(DATA_DIR or ROOT, "dialer.db")
 
-MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", 5))
-RETRY_HOURS = int(os.environ.get("RETRY_HOURS", 24))
-DAILY_CAP = int(os.environ.get("DAILY_CAP", 150))
 CHECKOUT_TTL_MIN = 10
 
-# Lead-local calling windows (hours). Weekday satisfies both the US TCPA
-# floor (8-21) and CRTC (9-21:30); weekend uses the tighter CRTC rule.
-# Override with e.g. WINDOW_WEEKDAY="9-20.5": do not widen past 8-21.
-def _window(env, default):
-    raw = os.environ.get(env)
-    if raw and "-" in raw:
-        lo, _, hi = raw.partition("-")
-        return (float(lo), float(hi))
-    return default
-
-
-WINDOW_WEEKDAY = _window("WINDOW_WEEKDAY", (9.0, 20.5))
-WINDOW_WEEKEND = _window("WINDOW_WEEKEND", (10.0, 18.0))
-CALLBACK_WINDOW = _window("WINDOW_CALLBACK", (8.0, 21.0))
+# Policy, filled from config.yaml by configure_policy(). See dialer/policy.py.
+WINDOWS = dict(policy.DEFAULT_WINDOWS)
+RETRY = dict(policy.DEFAULT_RETRY)
+NUMBERS = dict(policy.DEFAULT_NUMBERS)
+POOL = []                          # [{number, area_code, state, warmup_start?}]
+ENFORCE_WINDOWS = True             # off only in simulator mode: no real call is placed
+ALLOW_MOBILE = False
+MAX_ATTEMPTS = RETRY["max_attempts"]
+DAILY_CAP = NUMBERS["max_dials_per_number_per_day"]
+_rr_cursor = 0
 
 RETRYABLE = {"NO_ANSWER", "VOICEMAIL", "BUSY", "GATEKEEPER"}
 FINAL = {"INTERESTED", "NOT_INT", "WRONG_NUMBER", "DISCONNECTED", "DNC"}
@@ -70,6 +64,30 @@ def configure(outcomes, stats_tz=None, objection_labels=None):
     CONNECTED = {o["key"] for o in outcomes if o.get("connect")}
 
 
+def configure_policy(windows=None, retry=None, numbers=None, pool=None, enforce_windows=True, allow_mobile=False):
+    global WINDOWS, RETRY, NUMBERS, POOL, ENFORCE_WINDOWS, ALLOW_MOBILE, MAX_ATTEMPTS, DAILY_CAP
+    WINDOWS = dict(policy.DEFAULT_WINDOWS, **(windows or {}))
+    RETRY = dict(policy.DEFAULT_RETRY, **{k: v for k, v in (retry or {}).items() if k in policy.DEFAULT_RETRY})
+    NUMBERS = dict(policy.DEFAULT_NUMBERS, **{k: v for k, v in (numbers or {}).items() if k in policy.DEFAULT_NUMBERS})
+    POOL = []
+    for entry in pool or []:
+        number = "+" + "".join(ch for ch in str(entry.get("number", "")) if ch.isdigit())
+        if len(number) < 11:
+            continue
+        start = entry.get("warmup_start")
+        if isinstance(start, str):
+            try:
+                start = datetime.fromisoformat(start).date()
+            except ValueError:
+                start = None
+        POOL.append({"number": number, "area_code": str(entry.get("area_code") or policy.area_code(number)),
+                     "state": str(entry.get("state") or "").upper(), "warmup_start": start,
+                     "label": entry.get("label") or ""})
+    ENFORCE_WINDOWS, ALLOW_MOBILE = bool(enforce_windows), bool(allow_mobile)
+    MAX_ATTEMPTS = RETRY["max_attempts"]
+    DAILY_CAP = NUMBERS["max_dials_per_number_per_day"]
+
+
 def day_start(at=None):
     """UTC stamp where the current stats day began."""
     return iso(funnel.range_start("today", at or now(), STATS_TZ))
@@ -87,7 +105,7 @@ CREATE TABLE IF NOT EXISTS leads (
   li_status TEXT DEFAULT '', email TEXT DEFAULT '', mobile TEXT DEFAULT '',
   is_mobile INTEGER DEFAULT 0, source TEXT DEFAULT '',
   dm_name TEXT DEFAULT '', gatekeeper_name TEXT DEFAULT '', lead_notes TEXT DEFAULT '',
-  pain TEXT DEFAULT '', ppap_per_year TEXT DEFAULT '', tags TEXT DEFAULT '',
+  pain TEXT DEFAULT '', ppap_per_year TEXT DEFAULT '', tags TEXT DEFAULT '', next_half TEXT DEFAULT '',
   list_id TEXT DEFAULT '', source_file TEXT DEFAULT '',
   status TEXT DEFAULT 'NEW',
   checked_out_by TEXT, checked_out_at TEXT,
@@ -115,6 +133,14 @@ CREATE INDEX IF NOT EXISTS idx_dispo_at ON dispositions(at);
 CREATE INDEX IF NOT EXISTS idx_dispo_phone ON dispositions(phone);
 CREATE TABLE IF NOT EXISTS dnc (
   phone TEXT PRIMARY KEY, reason TEXT, added_at TEXT, added_by TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id INTEGER PRIMARY KEY,
+  agent TEXT, script_version TEXT DEFAULT '', target_dials INTEGER, target_minutes INTEGER,
+  started_at TEXT, ended_at TEXT, active_seconds INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS number_state (
+  number TEXT PRIMARY KEY, parked INTEGER DEFAULT 0, reason TEXT DEFAULT '', at TEXT
 );
 CREATE TABLE IF NOT EXISTS agent_events (
   id INTEGER PRIMARY KEY,
@@ -145,6 +171,7 @@ MIGRATIONS = [
     ("leads", "pain", "TEXT DEFAULT ''"),
     ("leads", "ppap_per_year", "TEXT DEFAULT ''"),
     ("leads", "tags", "TEXT DEFAULT ''"),
+    ("leads", "next_half", "TEXT DEFAULT ''"),       # 'am' | 'pm': the half of the day the next try must land in
     # Imperium funnel
     ("dispositions", "pickup", "INTEGER DEFAULT 0"),
     ("dispositions", "dm", "INTEGER DEFAULT 0"),
@@ -319,30 +346,219 @@ def lead_offset(lead, at=None):
     return stored if stored is not None else -5.0
 
 
+def to_local(lead, at=None):
+    """The prospect's wall clock (naive) at UTC moment `at`."""
+    return (at or now()) + timedelta(hours=lead_offset(lead, at))
+
+
+def to_utc(lead, local):
+    """A naive prospect-local datetime -> naive UTC, honouring their zone's
+    clock changes when the zone name is known."""
+    name = (lead.get("tz_name") if isinstance(lead, dict) else lead["tz_name"]) or ""
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            return local.replace(tzinfo=ZoneInfo(name)).astimezone(timezone.utc).replace(tzinfo=None)
+        except Exception:
+            pass
+    return local - timedelta(hours=lead_offset(lead))
+
+
+def lead_tier(lead, at=None):
+    """'power' | 'secondary' | None for a cold dial right now."""
+    return policy.tier(to_local(lead, at), WINDOWS) if ENFORCE_WINDOWS else "power"
+
+
+def in_hard(lead, at=None):
+    """May this lead be rung at all right now (requested callbacks, hand-picked leads)?"""
+    return policy.in_hard(to_local(lead, at), WINDOWS) if ENFORCE_WINDOWS else True
+
+
 def in_window(tz_offset, at=None, callback=False):
-    """Is it callable now at the lead's local (UTC+offset) time?"""
-    local = (at or now()) + timedelta(hours=tz_offset or -5)
-    if callback:
-        lo, hi = CALLBACK_WINDOW
-    elif local.weekday() >= 5:
-        lo, hi = WINDOW_WEEKEND
-    else:
-        lo, hi = WINDOW_WEEKDAY
-    h = local.hour + local.minute / 60.0
-    return lo <= h < hi
+    """Kept for list rows: is a lead at this UTC offset callable now?"""
+    if not ENFORCE_WINDOWS:
+        return True
+    local = (at or now()) + timedelta(hours=tz_offset if tz_offset is not None else -5)
+    return policy.in_hard(local, WINDOWS) if callback else policy.tier(local, WINDOWS) is not None
 
 
-def dials_today(con):
-    day = day_start()
-    return con.execute(
-        "SELECT COUNT(*) FROM dispositions WHERE at>=? AND disposition!='SKIP'",
-        (day,)).fetchone()[0]
+def dials_today(con, number=None):
+    sql, args = "SELECT COUNT(*) FROM dispositions WHERE at>=? AND disposition!='SKIP'", [day_start()]
+    if number:
+        sql += " AND number_used=?"
+        args.append(number)
+    return con.execute(sql, args).fetchone()[0]
+
+
+# ---- caller-ID pool ----------------------------------------------------------
+
+def _pool():
+    return POOL or [{"number": FALLBACK_CALLER_ID, "area_code": policy.area_code(FALLBACK_CALLER_ID),
+                     "state": "", "warmup_start": None, "label": ""}]
+
+
+FALLBACK_CALLER_ID = "+19175550142"
+
+
+def _today_local():
+    return funnel.local_date(iso(now()), STATS_TZ)
+
+
+def _effective_pool(con):
+    """Pool entries with a warm-up start: the configured date, else the day
+    the number was first used here, else today (a brand-new number)."""
+    out = []
+    for e in _pool():
+        start = e.get("warmup_start")
+        if start is None:
+            first = con.execute("SELECT MIN(at) FROM dispositions WHERE number_used=?", (e["number"],)).fetchone()[0]
+            start = funnel.local_date(first, STATS_TZ) if first else _today_local()
+        out.append(dict(e, warmup_start=start))
+    return out
+
+
+def _usage(con):
+    return {r["number_used"]: r["n"] for r in con.execute(
+        "SELECT number_used, COUNT(*) n FROM dispositions WHERE at>=? AND disposition!='SKIP' "
+        "AND number_used!='' GROUP BY number_used", (day_start(),))}
+
+
+def _parked(con):
+    return {r["number"] for r in con.execute("SELECT number FROM number_state WHERE parked=1")}
+
+
+def assign_caller_id(con, lead):
+    """(number, reason) for this lead, or (None, why-not). Advances the
+    round-robin cursor only when round robin actually chose."""
+    global _rr_cursor
+    entry, reason, _rr_cursor = policy.pick_caller_id(
+        lead["phone"], lead["state"], _effective_pool(con), _usage(con), _today_local(),
+        _parked(con), _rr_cursor, NUMBERS)
+    return (entry["number"] if entry else None), reason
+
+
+def numbers_health():
+    """Per caller ID: today's dials against its cap, warm-up day, 7-day pickup
+    rate, and whether it is flagged or parked."""
+    week = iso(now() - timedelta(days=7))
+    today = _today_local()
+    with connect() as con:
+        usage, parked = _usage(con), {r["number"]: dict(r) for r in con.execute("SELECT * FROM number_state WHERE parked=1")}
+        out = []
+        for e in _effective_pool(con):
+            r = con.execute(
+                "SELECT COUNT(*) dials, COALESCE(SUM(pickup),0) pickups FROM dispositions "
+                "WHERE number_used=? AND at>=? AND disposition!='SKIP'", (e["number"], week)).fetchone()
+            dials, pickups = r["dials"], r["pickups"]
+            warm_day = (today - e["warmup_start"]).days + 1
+            out.append({
+                "number": e["number"], "area_code": e["area_code"], "state": e["state"], "label": e.get("label") or "",
+                "used_today": usage.get(e["number"], 0), "cap": policy.daily_cap(e, today, NUMBERS),
+                "warming": warm_day <= NUMBERS["warmup_days"], "warmup_day": warm_day, "warmup_days": NUMBERS["warmup_days"],
+                "dials_7d": dials, "pickups_7d": pickups, "pickup_rate_7d": (pickups / dials) if dials else None,
+                "spam_suspect": policy.spam_suspect(dials, pickups, NUMBERS),
+                "parked": e["number"] in parked, "park_reason": (parked.get(e["number"]) or {}).get("reason", ""),
+            })
+        return out
+
+
+def set_parked(number, parked, reason="manual"):
+    with connect() as con:
+        con.execute("INSERT INTO number_state (number, parked, reason, at) VALUES (?,?,?,?) "
+                    "ON CONFLICT(number) DO UPDATE SET parked=excluded.parked, reason=excluded.reason, at=excluded.at",
+                    (number, 1 if parked else 0, reason if parked else "", iso(now())))
+
+
+def _auto_park(con, number):
+    if not number:
+        return False
+    r = con.execute("SELECT COUNT(*) dials, COALESCE(SUM(pickup),0) pickups FROM dispositions "
+                    "WHERE number_used=? AND at>=? AND disposition!='SKIP'",
+                    (number, iso(now() - timedelta(days=7)))).fetchone()
+    if not policy.should_park(r["dials"], r["pickups"], NUMBERS):
+        return False
+    already = con.execute("SELECT parked FROM number_state WHERE number=?", (number,)).fetchone()
+    if already and already["parked"]:
+        return False
+    rate = r["pickups"] / r["dials"]
+    con.execute("INSERT INTO number_state (number, parked, reason, at) VALUES (?,?,?,?) "
+                "ON CONFLICT(number) DO UPDATE SET parked=1, reason=excluded.reason, at=excluded.at",
+                (number, 1, f"auto: {rate:.0%} pickup over {r['dials']} dials in 7 days", iso(now())))
+    return True
+
+
+# ---- picking the next lead ---------------------------------------------------
+
+_ELIGIBLE = ("status='NEW' AND callback_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= :now) "
+             "AND attempts < :max AND (is_mobile=0 OR :mobile=1)")
+
+
+def _zones(con, t):
+    """Every (zone, offset) combination among cold-eligible leads, with what
+    the clock says there right now."""
+    args = {"now": iso(t), "max": MAX_ATTEMPTS, "mobile": int(ALLOW_MOBILE)}
+    out = []
+    for r in con.execute(f"SELECT tz_name, tz_offset, COUNT(*) n FROM leads WHERE {_ELIGIBLE} GROUP BY tz_name, tz_offset", args):
+        zone = {"tz_name": r["tz_name"] or "", "tz_offset": r["tz_offset"]}
+        local = to_local(zone, t)
+        midnight_utc = to_utc(zone, local.replace(hour=0, minute=0, second=0, microsecond=0))
+        where = "(last_called_at IS NULL OR last_called_at < :midnight)"          # never twice in one local day
+        if ENFORCE_WINDOWS:
+            where += " AND (next_half IS NULL OR next_half='' OR next_half=:half)"
+        zargs = dict(args, tzn=zone["tz_name"], tzo=zone["tz_offset"], midnight=iso(midnight_utc), half=policy.half(local))
+        n = con.execute(f"SELECT COUNT(*) FROM leads WHERE {_ELIGIBLE} AND tz_name=:tzn AND tz_offset IS :tzo AND {where}", zargs).fetchone()[0]
+        out.append(dict(zone, local=local, tier=lead_tier(zone, t), label=policy.zone_label(zone["tz_name"], lead_offset(zone, t)),
+                        eligible=n, where=where, args=zargs))
+    return out
+
+
+def window_status(at=None):
+    """For the cockpit's one-liner: 'now dialing: ET power window, 41 leads eligible'."""
+    t = at or now()
+    with connect() as con:
+        zones = _zones(con, t)
+    for tier in ("power", "secondary"):
+        live = [z for z in zones if z["tier"] == tier and z["eligible"]]
+        if live:
+            by_label = {}
+            for z in live:
+                by_label[z["label"]] = by_label.get(z["label"], 0) + z["eligible"]
+            order = ["ET", "CT", "MT", "PT", "AKT", "HT"]
+            labels = sorted(by_label, key=lambda l: order.index(l) if l in order else 99)
+            return {"open": True, "enforced": ENFORCE_WINDOWS, "tier": tier, "zones": [{"label": l, "eligible": by_label[l]} for l in labels],
+                    "eligible": sum(by_label.values())}
+    nxt = None
+    for z in zones:
+        if not z["eligible"] and not ENFORCE_WINDOWS:
+            continue
+        opening = policy.next_open(z["local"], WINDOWS)
+        if opening:
+            when = to_utc(z, opening)
+            if nxt is None or when < nxt[0]:
+                nxt = (when, z["label"], policy.tier(opening, WINDOWS), opening)
+    return {"open": False, "enforced": ENFORCE_WINDOWS, "tier": None, "zones": [], "eligible": 0,
+            "next_open_at": iso(nxt[0]) if nxt else None, "next_zone": nxt[1] if nxt else None,
+            "next_tier": nxt[2] if nxt else None,
+            "next_local": nxt[3].strftime("%a %-I:%M%p").replace("AM", "am").replace("PM", "pm") if nxt else None}
+
+
+def _with_caller_id(con, lead):
+    number, reason = assign_caller_id(con, lead)
+    if number is None:
+        return None, reason
+    lead = dict(lead)
+    lead["_caller_id"], lead["_caller_reason"] = number, reason
+    return lead, None
 
 
 def checkout(agent):
     """Atomically hand the next dialable lead to `agent`.
 
-    Priority: due callbacks, then fresh leads by rank, then skipped ones.
+    Order: the lead they already hold, then due callbacks (any time inside the
+    hard limits, the prospect asked for it), then cold leads from zones in a
+    POWER window, then zones in a SECONDARY window, best rank first. Because
+    the windows follow each prospect's clock, the queue walks ET, CT, MT, PT
+    on its own as the day moves.
     Returns (lead_dict, None) or (None, reason_string).
     """
     t = now()
@@ -351,46 +567,52 @@ def checkout(agent):
             "UPDATE leads SET status='NEW', checked_out_by=NULL WHERE status='OUT' AND checked_out_at < ?",
             (iso(t - timedelta(minutes=CHECKOUT_TTL_MIN)),))
 
-        done = dials_today(con)
-        if done >= DAILY_CAP:
-            return None, f"Daily cap reached ({done}/{DAILY_CAP} dials on this number)."
-
-        # A reload mid-lead must not strand it for the TTL: if this agent
-        # already holds one, hand the same lead back.
         held = con.execute(
             "SELECT * FROM leads WHERE status='OUT' AND checked_out_by=? "
             "ORDER BY checked_out_at DESC LIMIT 1", (agent,)).fetchone()
         if held is not None:
             con.execute("UPDATE leads SET checked_out_at=? WHERE id=?", (iso(t), held["id"]))
-            return dict(held), None
+            return _with_caller_id(con, held)
 
-        # Due callbacks first: they may stretch the normal window a little.
-        rows = con.execute(
+        pick = None
+        due = con.execute(
             """SELECT * FROM leads WHERE status='NEW' AND callback_at IS NOT NULL
-               AND callback_at <= ? ORDER BY callback_at LIMIT 50""", (iso(t),)).fetchall()
-        pick = next((r for r in rows if in_window(lead_offset(r, t), t, callback=True)), None)
+               AND callback_at <= ? AND (is_mobile=0 OR ?=1) ORDER BY callback_at LIMIT 50""",
+            (iso(t), int(ALLOW_MOBILE))).fetchall()
+        pick = next((r for r in due if in_hard(r, t)), None)
+
+        zones = None
+        if pick is None:
+            zones = _zones(con, t)
+            for tier in ("power", "secondary"):
+                best = None
+                for z in (z for z in zones if z["tier"] == tier and z["eligible"]):
+                    r = con.execute(
+                        f"SELECT * FROM leads WHERE {_ELIGIBLE} AND tz_name=:tzn AND tz_offset IS :tzo AND {z['where']} "
+                        "ORDER BY skipped, rank DESC, attempts LIMIT 1", z["args"]).fetchone()
+                    if r is not None and (best is None or (r["skipped"], -r["rank"], r["attempts"]) < (best["skipped"], -best["rank"], best["attempts"])):
+                        best = r
+                if best is not None:
+                    pick = best
+                    break
 
         if pick is None:
-            rows = con.execute(
-                """SELECT * FROM leads WHERE status='NEW' AND callback_at IS NULL
-                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                   AND attempts < ?
-                   ORDER BY skipped, rank DESC, attempts LIMIT 400""",
-                (iso(t), MAX_ATTEMPTS)).fetchall()
-            pick = next((r for r in rows if in_window(lead_offset(r, t), t)), None)
-            if pick is None and rows:
-                return None, ("Leads remain, but none are inside their local "
-                              "calling window right now.")
+            waiting = sum(z["eligible"] for z in zones or [])
+            if due or waiting:
+                return None, "Leads remain, but nobody is inside a calling window on their own clock right now."
+            if zones:
+                return None, "Every lead left was already tried today, or is waiting for its next morning or afternoon slot."
+            return None, "Queue is empty. Load a new list or wait for retries to come due."
 
-        if pick is None:
-            return None, "Queue is empty: load a new list or wait for retries to come due."
-
+        lead, why_not = _with_caller_id(con, pick)
+        if lead is None:
+            return None, why_not
         cur = con.execute(
             "UPDATE leads SET status='OUT', checked_out_by=?, checked_out_at=? "
             "WHERE id=? AND status='NEW'", (agent, iso(t), pick["id"]))
         if cur.rowcount == 0:            # lost the race; caller retries
             return checkout(agent)
-        return dict(pick), None
+        return lead, None
 
 
 def history(phone, limit=20):
@@ -417,7 +639,8 @@ _LIST_COLS = ("phone, first, last, company, title, city, state, tz_offset, tz_na
 def _list_row(r, t):
     d = dict(r)
     d["tz_offset"] = lead_offset(d, t)               # live, DST-aware
-    d["in_window"] = in_window(d["tz_offset"], t, callback=bool(d["callback_at"]))
+    d["in_window"] = in_hard(d, t) if d["callback_at"] else lead_tier(d, t) is not None
+    d["tier"] = lead_tier(d, t)
     return d
 
 
@@ -565,19 +788,19 @@ def is_dnc(phone):
         return con.execute("SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone() is not None
 
 
-def checkout_specific(phone, agent, tz_offset=None, tz_name=""):
-    """Agent picked a lead by hand (queue click, callback, typed number).
-    Same guard rails as the automatic path: DNC, daily cap, the lead-local
-    calling window, and no stealing a lead another agent has open. Unknown
-    numbers get a bare lead row so the call is logged like any other.
+def checkout_specific(phone, agent, tz_offset=None, tz_name="", returning=False):
+    """Agent picked a lead by hand (queue click, callback, inbox, typed number).
+    Same guard rails as the automatic path: DNC, mobile block, a caller ID with
+    room under its cap, the 08:00 to 18:00 weekday limit on the prospect's
+    clock, no second dial of a no-answer on the same day, and no stealing a
+    lead another agent has open. `returning` is set when they rang us first
+    (inbox call back), which lifts the same-day rule. Unknown numbers get a
+    bare lead row so the call is logged like any other.
     Returns (lead_dict, None) or (None, reason_string)."""
     t = now()
     with connect() as con:
         if con.execute("SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone():
             return None, "That number is on the do-not-call list."
-        done = dials_today(con)
-        if done >= DAILY_CAP:
-            return None, f"Daily cap reached ({done}/{DAILY_CAP} dials on this number)."
 
         row = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
         if row is None:
@@ -590,17 +813,26 @@ def checkout_specific(phone, agent, tz_offset=None, tz_name=""):
 
         if row["status"] == "DNC":
             return None, "That lead is marked do-not-call."
+        if row["is_mobile"] and not ALLOW_MOBILE:
+            return None, "That number is a mobile. Mobiles are blocked (compliance.allow_mobile is off)."
         stale = iso(t - timedelta(minutes=CHECKOUT_TTL_MIN))
         if (row["status"] == "OUT" and row["checked_out_by"] not in (None, agent)
                 and (row["checked_out_at"] or "") >= stale):
             return None, f"{row['checked_out_by']} has that lead open right now."
-        if not in_window(lead_offset(row, t), t, callback=True):
-            return None, "Outside that lead's local calling hours (8am to 9pm their time)."
+        if not in_hard(row, t):
+            return None, "Outside calling hours on their clock (weekdays, 8am to 6pm their time)."
+        if (not returning and row["last_called_at"] and not row["callback_at"]
+                and row["last_disposition"] not in CONNECTED
+                and policy.same_local_day(to_local(row, datetime.fromisoformat(row["last_called_at"])), to_local(row, t))):
+            return None, "Already tried today with no answer. Same-day redials get numbers labelled as spam."
 
+        lead, why_not = _with_caller_id(con, row)
+        if lead is None:
+            return None, why_not
         con.execute(
             "UPDATE leads SET status='OUT', checked_out_by=?, checked_out_at=? WHERE id=?",
             (agent, iso(t), row["id"]))
-        return dict(row), None
+        return lead, None
 
 
 def reschedule(phone, callback_at):
@@ -657,10 +889,16 @@ def disposition(phone, company, dispo, notes, agent, duration, callback_at=None,
             con.execute("INSERT OR REPLACE INTO dnc VALUES (?,?,?,?)",
                         (phone, notes or "agent_request", t, agent))
 
+        final_dispo, next_half, exhausted_now = dispo, "", False
         if dispo == "CALLBACK" and callback_at:
             status, next_at, cb = "NEW", None, callback_at
-        elif dispo in RETRYABLE and attempts < MAX_ATTEMPTS:
-            status, next_at, cb = "NEW", iso(now() + timedelta(hours=RETRY_HOURS)), None
+        elif dispo in RETRYABLE:
+            zone = dict(lead) if lead is not None else {"tz_name": "", "tz_offset": -5}
+            again, next_half = policy.next_attempt(to_local(zone), attempts, RETRY, WINDOWS)
+            if again is None:            # six tries, never reached the DM: email only from here
+                status, next_at, cb, final_dispo, next_half, exhausted_now = "EXHAUSTED", None, None, "EXHAUSTED", "", True
+            else:
+                status, next_at, cb = "NEW", iso(to_utc(zone, again)), None
         elif dispo == "DNC":
             status, next_at, cb = "DNC", None, None
         else:
@@ -668,15 +906,40 @@ def disposition(phone, company, dispo, notes, agent, duration, callback_at=None,
 
         con.execute(
             """UPDATE leads SET status=?, attempts=?, last_disposition=?, last_called_at=?,
-               next_attempt_at=?, callback_at=?, checked_out_by=NULL WHERE phone=?""",
-            (status, attempts, dispo, t, next_at, cb, phone))
+               next_attempt_at=?, next_half=?, callback_at=?, checked_out_by=NULL WHERE phone=?""",
+            (status, attempts, final_dispo, t, next_at, next_half or "", cb, phone))
+        if exhausted_now and lead is not None:
+            tags = [x for x in (lead["tags"] or "").split(",") if x]
+            if "email_only" not in tags:
+                tags.append("email_only")
+            con.execute("UPDATE leads SET tags=? WHERE phone=?", (",".join(tags), phone))
+        _auto_park(con, (extra.get("number_used") or ""))
 
         # What the caller learned on the call sticks to the lead.
         learned = {k: str(extra[k]).strip()[:500] for k in LEAD_CAPTURE if str(extra.get(k) or "").strip()}
         if learned and lead is not None:
             con.execute(f"UPDATE leads SET {', '.join(k + '=?' for k in learned)} WHERE phone=?",
                         list(learned.values()) + [phone])
-        return dispo_id
+    if exhausted_now:
+        export_exhausted()
+    return dispo_id
+
+
+def export_exhausted(path=None):
+    """Leads that used all their attempts without reaching the DM, for the
+    cold-email sequence. Rewritten whole each time so it never drifts."""
+    path = path or os.path.join(DATA_DIR or ROOT, "out", "exhausted_for_email.csv")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cols = ["company", "first", "last", "dm_name", "title", "email", "phone", "website", "linkedin_url",
+            "process", "oem", "city", "state", "attempts", "last_called_at", "tags"]
+    with connect() as con, open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(cols)
+        n = 0
+        for r in con.execute(f"SELECT {', '.join(cols)} FROM leads WHERE status='EXHAUSTED' ORDER BY last_called_at"):
+            w.writerow([r[c] for c in cols])
+            n += 1
+    return path, n
 
 
 def undo(dispo_id, agent):
@@ -701,6 +964,7 @@ def undo(dispo_id, agent):
 
         snap = json.loads(d["prev_state"])
         had_dnc = snap.pop("had_dnc", False)
+        was_exhausted = con.execute("SELECT status FROM leads WHERE phone=?", (d["phone"],)).fetchone()["status"] == "EXHAUSTED"
         live_cols = {r["name"] for r in con.execute("PRAGMA table_info(leads)")}
         fields = [k for k in snap if k in live_cols and k != "status"]
         con.execute(
@@ -711,7 +975,29 @@ def undo(dispo_id, agent):
             con.execute("DELETE FROM dnc WHERE phone=?", (d["phone"],))
         con.execute("DELETE FROM dispositions WHERE id=?", (dispo_id,))
         lead = con.execute("SELECT * FROM leads WHERE phone=?", (d["phone"],)).fetchone()
-        return dict(lead), d["notes"], None
+        lead, _ = _with_caller_id(con, lead) if lead is not None else (None, None)
+    if was_exhausted:
+        export_exhausted()
+    return lead, d["notes"], None
+
+
+def session_start(agent, script_version, target_dials, target_minutes):
+    with connect() as con:
+        con.execute("UPDATE sessions SET ended_at=? WHERE agent=? AND ended_at IS NULL", (iso(now()), agent))
+        return con.execute(
+            "INSERT INTO sessions (agent, script_version, target_dials, target_minutes, started_at) VALUES (?,?,?,?,?)",
+            (agent, script_version[:24], int(target_dials or 0), int(target_minutes or 0), iso(now()))).lastrowid
+
+
+def session_end(session_id, active_seconds):
+    """Close the session and hand back its own funnel and top objection."""
+    with connect() as con:
+        con.execute("UPDATE sessions SET ended_at=?, active_seconds=? WHERE id=?",
+                    (iso(now()), int(active_seconds or 0), session_id))
+        row = con.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+    rows = funnel_rows(session_id=session_id)
+    return {"session": dict(row) if row else None, "funnel": funnel.summarise(rows, now()),
+            "objections": funnel.top_objections(rows, OBJECTION_LABELS, limit=3)}
 
 
 def agent_event(agent, event, reason=""):
@@ -739,9 +1025,10 @@ _FUNNEL_COLS = ("phone, disposition, at, agent, duration, pickup, dm, pitched, r
                 "number_used, talk_seconds, session_id")
 
 
-def funnel_rows(start=None, agent=None, script=None, since=None):
+def funnel_rows(start=None, agent=None, script=None, since=None, session_id=None):
     sql, args = f"SELECT {_FUNNEL_COLS} FROM dispositions WHERE disposition != 'SKIP'", []
-    for clause, value in (("at >= ?", start), ("agent = ?", agent), ("script_version = ?", script), ("at >= ?", since)):
+    for clause, value in (("at >= ?", start), ("agent = ?", agent), ("script_version = ?", script),
+                          ("at >= ?", since), ("session_id = ?", session_id)):
         if value:
             sql += " AND " + clause
             args.append(value)
@@ -762,6 +1049,9 @@ def stats(agent=None, range_kind="today", script=None, since=None, labels=None):
         out = {
             "dials_today": dials_today(con),
             "cap": DAILY_CAP,
+            "caps": [{"number": e["number"], "used": _usage(con).get(e["number"], 0),
+                      "cap": policy.daily_cap(e, _today_local(), NUMBERS)} for e in _effective_pool(con)],
+            "parked": sorted(_parked(con)),
             "callbacks_due": row(
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND callback_at IS NOT NULL "
                 "AND callback_at <= ?", iso(t + timedelta(hours=24))),
@@ -772,6 +1062,7 @@ def stats(agent=None, range_kind="today", script=None, since=None, labels=None):
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND callback_at IS NULL "
                 "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) AND attempts < ?",
                 iso(t), MAX_ATTEMPTS),
+            "exhausted": row("SELECT COUNT(*) FROM leads WHERE status='EXHAUSTED'"),
             "retry_pool": row(
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND next_attempt_at > ?", iso(t)),
             "bookings_open": row(
@@ -784,6 +1075,7 @@ def stats(agent=None, range_kind="today", script=None, since=None, labels=None):
         "today": funnel.summarise(today_rows, t),
         "objections": funnel.top_objections(today_rows, labels or OBJECTION_LABELS),
         "server_now": iso(t),
+        "window": window_status(t),
     })
     if since:
         out["session"] = funnel.summarise(funnel_rows(agent=agent, since=since), t)

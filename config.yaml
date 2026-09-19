@@ -24,18 +24,36 @@ calling_hours:
     weekday: ["09:00", "21:30"]   # CRTC Unsolicited Telecom Rules
     weekend: ["10:00", "18:00"]   # tighter than US - do not copy the weekday window
 
+# Retry cadence for the browser dialer (dialer/policy.py). Six tries across
+# three weeks, never twice in one day, never the same weekday twice running,
+# mornings and afternoons alternating so a 9am no-answer is tried at 4pm next.
 retry:
-  max_attempts: 5
-  min_hours_between: 24
-  # Rotate time-of-day across attempts so a Tue 9am no-answer retries Thu 3pm,
-  # not Tue 9:15am. Same-day redialing is the classic spam-label trigger.
-  rotate_time_of_day: true
-  recall_suppression_days: 30     # do not reload a lead dialed within N days
+  max_attempts: 6
+  gap_days: [2, 3, 4, 5, 6]        # days to wait after attempt 1, 2, 3, 4, 5
+  voicemail_attempts: [1, 3, 5]    # leave a message on these tries only
+  recall_suppression_days: 30      # list prep: do not reload a lead dialed within N days
+  # After attempt 6 with no DM the lead closes as EXHAUSTED, is tagged
+  # email_only, and lands in out/exhausted_for_email.csv.
 
 numbers:
-  max_dials_per_number_per_day: 150
+  max_dials_per_number_per_day: 150   # hard stop, enforced by the dialer
   warmup_days: 21
-  warmup_start_dials: 30
+  warmup_dials_per_day: 30            # cap while a number is inside its warm-up
+  park_below_pickup_rate: 0.15        # auto-park: 7-day pickup rate under this ...
+  park_min_dials: 100                 # ... across at least this many dials
+  spam_flag_pickup_rate: 0.20         # softer flag: under this across spam_flag_min_dials
+  spam_flag_min_dials: 50
+  # Local presence. The dialer shows the number whose area code matches the
+  # lead, else one in the lead's state, else round robin. Every number here
+  # must also be on the Twilio /dial Function's CALLER_IDS allow-list
+  # (dialer/TWILIO.md). warmup_start is optional: without it the warm-up
+  # runs from the number's first dial here.
+  pool:
+    - {number: "+19893751429", area_code: "989", state: MI, warmup_start: 2026-09-16}
+  # Reputation checks opened from the Numbers rail. {number} is the 10 digits.
+  spam_check_urls:
+    - {label: Free Caller Registry, url: "https://www.freecallerregistry.com/fcr/"}
+    - {label: Search the number, url: "https://www.google.com/search?q=%22{number}%22+spam+OR+scam+OR+robocall"}
 
 # Weighted priority score -> `rank`. The queue dials DOWN RANK, so the best-fit
 # shops get called in the first power window of the day.
@@ -117,6 +135,23 @@ dialer:
     - {id: pawan, name: Pawan}
 
   pause_reasons: [Break, Lunch, Meeting, Admin / follow-ups, Coaching]
+
+  # Prospect-local calling windows for COLD dials. Power windows are dialed
+  # first, then secondary. Lunch (11:30 to 13:30) is never dialed cold.
+  # `hard` is the outer limit for anything at all, requested callbacks
+  # included. Because every window follows the prospect's own clock, the queue
+  # walks ET, CT, MT, PT by itself as the day moves.
+  windows:
+    power:     [["08:15", "10:15"], ["15:45", "17:45"]]
+    secondary: [["10:15", "11:30"], ["13:30", "15:45"]]
+    hard:      ["08:00", "18:00"]
+    weekends:  false
+
+  # Start-session defaults. The session ends itself at whichever comes first.
+  session:
+    target_dials: 100
+    target_minutes: 90
+  default_script_version: v1
 
   # The day that stats, caps and "same day" rules run on. You dial US business
   # hours from India, which crosses midnight in both IST and UTC, so the day

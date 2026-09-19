@@ -250,7 +250,7 @@ export function wireRails() {
     let b;
     if ((b = e.target.closest("[data-follow]"))) followModal(b.getAttribute("data-follow"));
     else if ((b = e.target.closest("[data-open]"))) actions.openLead(b.getAttribute("data-open"));
-    else if ((b = e.target.closest("[data-callback]"))) actions.openLead(b.getAttribute("data-callback"), "/api/manual");
+    else if ((b = e.target.closest("[data-callback]"))) actions.openLead(b.getAttribute("data-callback"), "/api/manual", { returning: true });
     else if ((b = e.target.closest("[data-resched]"))) rescheduleModal(b.getAttribute("data-resched"));
     else if ((b = e.target.closest("[data-uncb]"))) {
       api("/api/reschedule", { phone: b.getAttribute("data-uncb"), callback_at: null, agent: S.agent }).then((d) => {

@@ -39,6 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import funnel
+import policy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -120,6 +121,11 @@ def clean_phone(raw):
     if len(digits) == 10:
         digits = "1" + digits
     return "+" + digits if re.fullmatch(r"1[2-9]\d{9}", digits) else ""
+
+
+def script_versions():
+    tree = (DIALER.get("scripts") or {}).get("tree") or {}
+    return list(tree) or [DIALER.get("default_script_version") or "v1"]
 
 
 def objection_labels():
@@ -408,7 +414,16 @@ def lead_payload(lead):
         "last_disposition": lead["last_disposition"],
         "callback_at": lead["callback_at"],
         "local_time": local.strftime("%-I:%M%p").lower(),
-        "in_window": db.in_window(offset, callback=True),
+        "in_window": db.in_hard(lead),
+        "tier": db.lead_tier(lead),
+        "zone": policy.zone_label(lead.get("tz_name") or "", offset),
+        "attempt_no": (lead["attempts"] or 0) + 1,
+        "vm_allowed": policy.voicemail_allowed((lead["attempts"] or 0) + 1, db.RETRY),
+        "caller_id": lead.get("_caller_id") or "",
+        "caller_id_reason": lead.get("_caller_reason") or "",
+        "caller_id_spoken": policy.spoken(lead.get("_caller_id") or CONFIG["caller_id"]),
+        "pain": lead.get("pain") or "", "ppap_per_year": lead.get("ppap_per_year") or "",
+        "tags": [x for x in (lead.get("tags") or "").split(",") if x],
         "list_id": lead.get("list_id") or "",
         "status": lead.get("status") or "",
         "history": db.history(lead["phone"]),
@@ -512,12 +527,14 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/config":
             return self._json(dict(public_config(), caller_id=CONFIG["caller_id"],
                                    live=bool(twilio_token("probe")),
-                                   windows={"weekday": db.WINDOW_WEEKDAY,
-                                            "weekend": db.WINDOW_WEEKEND,
-                                            "hard": db.CALLBACK_WINDOW,
-                                            "enforced": True, "weekdays_only": False},
+                                   windows={"hard": [policy.hhmm(x) for x in db.WINDOWS["hard"]],
+                                            "power": db.WINDOWS["power"], "secondary": db.WINDOWS["secondary"],
+                                            "enforced": db.ENFORCE_WINDOWS,
+                                            "weekdays_only": not db.WINDOWS.get("weekends")},
                                    max_attempts=db.MAX_ATTEMPTS,
-                                   retry_hours=db.RETRY_HOURS))
+                                   voicemail_attempts=db.RETRY.get("voicemail_attempts"),
+                                   script_versions=script_versions(),
+                                   session_defaults=DIALER.get("session") or {}))
 
         if route == "/api/leads":
             return self._json({"leads": db.lead_list((query.get("q") or [""])[0][:80])})
@@ -542,7 +559,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({
                 "lead": lead_payload(lead),
                 "reason": reason,
-                "queue": db.queue_preview(),
                 "stats": db.stats(self._agent()),
                 "caller_id": CONFIG["caller_id"],
             })
@@ -568,6 +584,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
+
+        if route == "/api/numbers":
+            return self._json({"numbers": db.numbers_health(),
+                               "spam_check_urls": (DIALER["_raw"].get("numbers") or {}).get("spam_check_urls") or []})
+
+        if route == "/api/exhausted.csv":
+            path, _ = db.export_exhausted()
+            with open(path, "rb") as fh:
+                return self._send(200, fh.read(), "text/csv")
 
         if route == "/api/bookings":
             return self._json({"bookings": db.bookings()})
@@ -665,7 +690,8 @@ class Handler(BaseHTTPRequestHandler):
             if not phone:
                 return self._json({"error": "Enter a 10-digit US or Canadian number."}, 400)
             tz, tz_name = number_tz(phone) if route == "/api/manual" else (None, "")
-            lead, reason = db.checkout_specific(phone, self._agent(data), tz_offset=tz, tz_name=tz_name)
+            lead, reason = db.checkout_specific(phone, self._agent(data), tz_offset=tz, tz_name=tz_name,
+                                                returning=bool(data.get("returning")))
             if reason:
                 return self._json({"error": reason}, 409)
             return self._json({"ok": True, "lead": lead_payload(lead),
@@ -681,6 +707,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "lead not found"}, 404)
             return self._json({"ok": True, "callbacks": db.callbacks_list(),
                                "stats": db.stats(self._agent(data))})
+
+        if route == "/api/session/start":
+            versions = script_versions()
+            version = data.get("script_version") if data.get("script_version") in versions else versions[0]
+            sid = db.session_start(self._agent(data), version, data.get("target_dials"), data.get("target_minutes"))
+            return self._json({"ok": True, "id": sid, "script_version": version})
+
+        if route == "/api/session/end":
+            return self._json(dict(db.session_end(int(data.get("id") or 0), data.get("active_seconds")), ok=True))
+
+        if route == "/api/numbers/park":
+            number = "+" + re.sub(r"\D", "", str(data.get("number") or ""))
+            db.set_parked(number, bool(data.get("parked")), "manual")
+            return self._json({"ok": True, "numbers": db.numbers_health()})
 
         if route == "/api/followthrough":
             error = db.follow_through(int(data.get("id") or 0), data.get("show_status"),
@@ -785,7 +825,22 @@ def main():
     parser.add_argument("--no-open", action="store_true")
     parser.add_argument("--list", dest="list_id", metavar="ID",
                         help="import the newest prepped list with this list id before serving")
+    parser.add_argument("--strict-windows", action="store_true",
+                        help="simulator only: enforce calling windows anyway, to watch the ET to PT rotation")
     args = parser.parse_args()
+    CONFIG["caller_id"] = args.caller_id
+
+    # Policy. With no carrier credentials nothing real is dialed, so the
+    # simulator leaves the calling windows open unless asked not to. With
+    # credentials the windows are ALWAYS enforced; there is no switch for that.
+    raw = DIALER["_raw"]
+    simulator = not twilio_token("probe")
+    enforce = (not simulator) or args.strict_windows or os.environ.get("STRICT_WINDOWS") == "1"
+    db.FALLBACK_CALLER_ID = "+" + re.sub(r"\D", "", args.caller_id)
+    db.configure_policy(windows=DIALER.get("windows"), retry=raw.get("retry"), numbers=raw.get("numbers"),
+                        pool=(raw.get("numbers") or {}).get("pool"), enforce_windows=enforce,
+                        allow_mobile=bool((raw.get("compliance") or {}).get("allow_mobile")))
+
     if args.list_id:
         path = newest_list_file(args.list_id)
         if path:
@@ -793,20 +848,24 @@ def main():
             print(f"  list      {os.path.basename(path)}: +{added} new, {refreshed} refreshed")
         else:
             print(f"  list      no prepped file for list id {args.list_id} under out/ (run listprep.py first)")
-    CONFIG["caller_id"] = args.caller_id
 
-    simulator = not twilio_token("probe")
     if simulator and db.lead_count() == 0:
         added, _ = db.import_list_csv(os.path.join(HERE, "demo_leads.csv"))
         print(f"  demo      empty database in simulator mode: seeded {added} sample shops")
 
     s = db.stats()
+    w = s["window"]
     print(f"  db        {db.DB_PATH}")
-    print(f"  queue     {s['queue']} dialable now, {s['retry_pool']} waiting on retry timers, "
-          f"{s['callbacks_due']} callbacks due in 24h")
-    print(f"  today     {s['dials_today']}/{s['cap']} dials")
-    print(f"  caller ID {args.caller_id}")
-    print(f"  twilio    {'credentials found: real calls' if twilio_token('probe') else 'not configured: simulator mode (see TWILIO.md)'}")
+    print(f"  queue     {s['queue']} due, {s['retry_pool']} waiting on the retry cadence, "
+          f"{s['callbacks_due']} callbacks due in 24h, {s['exhausted']} exhausted (email only)")
+    print(f"  windows   {'enforced' if enforce else 'NOT enforced (simulator)'}: "
+          + (f"{w['tier']} window open, {w['eligible']} leads eligible" if w["open"]
+             else f"closed, next {w.get('next_zone') or '-'} {w.get('next_local') or ''}"))
+    for n in db.numbers_health():
+        print(f"  caller ID {n['number']}  {n['used_today']}/{n['cap']} today"
+              + (f"  warm-up day {n['warmup_day']}/{n['warmup_days']}" if n["warming"] else "")
+              + ("  PARKED" if n["parked"] else ""))
+    print(f"  carrier   {'twilio credentials found: real calls' if not simulator else 'not configured: simulator mode (see TWILIO.md)'}")
     print(f"  auth      {'basic auth on' if os.environ.get('DIALER_PASSWORD') else 'OFF: local use only'}")
     print(f"  serving   {args.host}:{args.port}\n")
 
