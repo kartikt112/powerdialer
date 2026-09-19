@@ -48,7 +48,7 @@ function renderQueue(q) {
       (l.status === "DNC" ? " disabled" : "") + ">" +
       '<span class="rank' + (l.rank >= 80 ? " hot" : "") + '">' + esc(l.rank || "-") + "</span>" +
       '<span class="main"><span class="t1">' + esc(l.company || fmtPhone(l.phone)) + '</span><span class="t2">' +
-      esc(name || fmtPhone(l.phone)) + tries + "</span></span>" +
+      esc(name || fmtPhone(l.phone)) + (l.rank ? " · rank " + l.rank : "") + tries + "</span></span>" +
       '<span class="meta">' + (tag || '<span class="num">' + leadClock(now, l.tz_offset) + "</span>" + esc(l.state || "") +
       (l.in_window ? "" : " · closed")) + "</span></button>";
   }).join("") || (q ? note("No match", "Nothing in any list matches &ldquo;" + esc(q) + "&rdquo;.")
@@ -72,7 +72,7 @@ export function renderCallbacks() {
       '<span class="meta"><span class="num' + (overdue ? " late" : "") + '">' + (overdue ? "due " : "") + rel(at) + "</span>" +
       leadDay(at, c.tz_offset) + " " + leadClock(at, c.tz_offset) + " theirs</span>" +
       (c.note ? '<span class="quote">&ldquo;' + esc(c.note) + "&rdquo;</span>" : "") +
-      '<span class="row-actions"><button class="btn sm primary" data-open="' + esc(c.phone) + '">' + icon("phone", "sm") + "Call now</button>" +
+      '<span class="row-actions"><button class="btn sm primary" data-open="' + esc(c.phone) + '">Call now</button>' +
       '<button class="btn sm" data-resched="' + esc(c.phone) + '">Reschedule</button>' +
       '<button class="btn sm quiet" data-uncb="' + esc(c.phone) + '" title="Drop the callback; the lead goes back to the normal queue">Remove</button></span></div>';
   }).join("") || note("No callbacks scheduled", "Pick Callback in wrap-up and it shows here with the note you left.");
@@ -209,7 +209,7 @@ function renderBookings() {
   const all = S.data.bookings || [];
   const need = all.filter((b) => b.needs_status), up = all.filter((b) => b.upcoming), done = all.filter((b) => !b.upcoming && !b.needs_status);
   const group = (title, list) => list.length ? '<div class="group-h"><span class="eyebrow">' + title + '</span><span class="muted" style="font-size:12px">' + list.length + "</span></div>" +
-    list.map((b) => bookingCard(b).replace('<span class="row-actions">', '<span class="row-actions"><button class="btn sm quiet" data-mail="' + b.id + '" title="Copy the confirmation email">' + icon("mail", "sm") + "</button>")).join("") : "";
+    list.map((b) => bookingCard(b).replace('<span class="row-actions">', '<span class="row-actions"><button class="btn sm quiet" data-mail="' + b.id + '" title="Copy the confirmation email">Copy email</button>')).join("") : "";
   $("l-bookings").innerHTML = group("Needs a result", need) + group("Upcoming", up) + group("Done", done.slice(0, 40)) ||
     note("No booked calls yet", "Save a call as Booked and it shows here. Afterwards mark show, no-show or sale, and the funnel credits the day you dialed.");
   $("n-book").textContent = need.length || "";
@@ -238,7 +238,7 @@ function renderNumbers() {
       (n.warming ? "<span>Warm-up day <b>" + n.warmup_day + "</b> of " + n.warmup_days + "</span>" : "<span>Warm</span>") + "</span>" +
       '<span class="row-actions">' +
       (n.parked ? '<span class="pill danger" title="' + esc(n.park_reason) + '">Parked</span>' : n.spam_suspect ? '<span class="pill warn" title="Under ' + Math.round((t.pickup || 0.2) * 100) + '% pickup across 50+ dials">Likely spam-labelled</span>' : "") +
-      spamUrls.map((u) => '<a class="btn sm" target="_blank" rel="noopener noreferrer" data-copynum="' + ten + '" href="' + esc(String(u.url).replace("{number}", ten)) + '">' + esc(u.label) + icon("external", "sm") + "</a>").join("") +
+      spamUrls.map((u) => '<a class="btn sm" style="text-decoration:none" target="_blank" rel="noopener noreferrer" data-copynum="' + ten + '" href="' + esc(String(u.url).replace("{number}", ten)) + '">' + esc(u.label) + "</a>").join("") +
       '<button class="btn sm quiet" data-park="' + esc(n.number) + '" data-to="' + (n.parked ? 0 : 1) + '">' + (n.parked ? "Unpark" : "Park") + "</button></span>" +
       (n.parked && n.park_reason ? '<span class="quote">' + esc(n.park_reason) + "</span>" : "") + "</div>";
   }).join("") + note("How this works", "Area code match, then same state, then round robin. A number is parked automatically when its 7-day pickup rate falls under 15% across 100+ dials. Checking a number copies it so you can paste it into the lookup.");
@@ -266,7 +266,7 @@ function renderInbox() {
       esc(m.name || (m.company ? fmtPhone(m.phone) : "Not in any list")) + "</span></span>" +
       '<span class="meta"><span class="num">' + rel(parseUTC(m.at)) + "</span></span>" +
       '<span class="row-actions">' + (m.dnc ? '<span class="pill danger">On the do-not-call list</span>'
-        : '<button class="btn sm primary" data-callback="' + esc(m.phone) + '">' + icon("phone", "sm") + "Call back</button>") + "</span></div>").join("");
+        : '<button class="btn sm primary" data-callback="' + esc(m.phone) + '">Call back</button>') + "</span></div>").join("");
   }
   if (S.data.voicemails.length) {
     html += '<div class="group-h"><span class="eyebrow">Voicemails</span></div>' + S.data.voicemails.map((v) => {
@@ -275,8 +275,8 @@ function renderInbox() {
       return '<div class="row card' + (isNew ? " unheard" : "") + '"><span class="dot">' + icon("voicemail") + "</span>" +
         '<span class="main"><span class="t1">' + esc(v.company || fmtPhone(v.from)) + '</span><span class="t2">' +
         (v.company ? esc(fmtPhone(v.from)) + " · " : "") + v.duration + "s" + (isNew ? " · new" : "") + "</span></span>" +
-        '<span class="meta"></span><span class="row-actions"><button class="btn sm" data-vm="' + esc(v.sid) + '">' + icon("play", "sm") + "Play</button>" +
-        (v.phone ? '<button class="btn sm primary" data-callback="' + esc(v.phone) + '">' + icon("phone", "sm") + "Call back</button>" : "") + "</span></div>";
+        '<span class="meta"></span><span class="row-actions"><button class="btn sm" data-vm="' + esc(v.sid) + '">Play</button>' +
+        (v.phone ? '<button class="btn sm primary" data-callback="' + esc(v.phone) + '">Call back</button>' : "") + "</span></div>";
     }).join("");
   }
   $("l-inbox").innerHTML = html || note("Inbox is empty", S.live ? "Missed calls and voicemails from people ringing you back show up here."

@@ -106,6 +106,71 @@ class Outcomes(unittest.TestCase):
         self.assertEqual(CFG["campaign"], "PPAP")
 
 
+class ScriptEditing(unittest.TestCase):
+    """The in-app editor lays DATA_DIR/scripts.json over config.yaml."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._data_dir = serve.DATA_DIR
+        serve.DATA_DIR = self.tmp
+        serve.DIALER.clear(); serve.DIALER.update(serve.load_dialer_config())
+        serve.apply_script_edits()
+
+    def tearDown(self):
+        serve.DATA_DIR = self._data_dir
+
+    def tree(self):
+        return serve.DIALER["scripts"]["tree"]
+
+    def test_editing_one_step_changes_only_that_version(self):
+        shipped = self.tree()["v1"]["steps"]["permission"]["say"][0]
+        error, _ = serve.save_script_edit({"op": "step", "version": "v1", "id": "permission",
+                                           "fields": {"say": ["Hi {dm_first}, this is a sales call. Thirty seconds?"], "cue": "Smile."}})
+        self.assertIsNone(error)
+        self.assertEqual(self.tree()["v1"]["steps"]["permission"]["say"], ["Hi {dm_first}, this is a sales call. Thirty seconds?"])
+        self.assertEqual(self.tree()["v2"]["steps"]["permission"]["say"][0], "Hi {dm_first}, this is a sales call. Thirty seconds?")  # v2 extends v1
+        self.assertEqual(self.tree()["v1"]["steps"]["pitch"]["say"], CFG["scripts"]["tree"]["v1"]["steps"]["pitch"]["say"])
+        self.assertEqual(serve.edited_map()["steps"], {"v1": ["permission"]})
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "scripts.json")))
+
+        serve.DIALER.clear(); serve.DIALER.update(serve.load_dialer_config()); serve.apply_script_edits()   # a restart keeps it
+        self.assertEqual(self.tree()["v1"]["steps"]["permission"]["cue"], "Smile.")
+
+        serve.save_script_edit({"op": "reset_step", "version": "v1", "id": "permission"})
+        self.assertEqual(self.tree()["v1"]["steps"]["permission"]["say"][0], shipped)
+
+    def test_a_new_version_starts_as_a_copy_and_can_be_deleted(self):
+        self.assertIsNone(serve.save_script_edit({"op": "version", "name": "V3", "extends": "v1"})[0])
+        self.assertEqual(serve.script_versions(), ["v1", "v2", "v3"])
+        self.assertEqual(self.tree()["v3"]["steps"]["ask"], self.tree()["v1"]["steps"]["ask"])
+        serve.save_script_edit({"op": "step", "version": "v3", "id": "ask", "fields": {"say": ["Want to see it?"]}})
+        self.assertEqual(self.tree()["v3"]["steps"]["ask"]["say"], ["Want to see it?"])
+        self.assertNotEqual(self.tree()["v1"]["steps"]["ask"]["say"], ["Want to see it?"])
+        self.assertIn("taken", serve.save_script_edit({"op": "version", "name": "v3", "extends": "v1"})[0])
+        self.assertIn("config.yaml", serve.save_script_edit({"op": "delete_version", "name": "v1"})[0])
+        self.assertIsNone(serve.save_script_edit({"op": "delete_version", "name": "v3"})[0])
+        self.assertEqual(serve.script_versions(), ["v1", "v2"])
+
+    def test_bad_text_is_refused_and_odd_tokens_are_flagged(self):
+        step = {"op": "step", "version": "v1", "id": "ask"}
+        self.assertIn("em dash", serve.save_script_edit(dict(step, fields={"say": ["Quick one \u2014 got a minute?"]}))[0])
+        self.assertIn("not closed", serve.save_script_edit(dict(step, fields={"say": ["{?oem}for {oem}"]}))[0])
+        self.assertIn("at least one line", serve.save_script_edit(dict(step, fields={"say": ["  "]}))[0])
+        error, warnings = serve.save_script_edit(dict(step, fields={"say": ["Hi {frist}"]}))
+        self.assertIsNone(error)
+        self.assertEqual(warnings, ["Unknown token {frist}"])
+        self.assertIn("does not exist", serve.save_script_edit({"op": "step", "version": "v9", "id": "ask", "fields": {}})[0])
+
+    def test_emails_and_the_objection_rule(self):
+        self.assertIsNone(serve.save_script_edit({"op": "email", "kind": "booked_confirm", "subject": "{dm_first}", "body": "See you {booked_when}."})[0])
+        self.assertEqual(serve.DIALER["scripts"]["emails"]["booked_confirm"]["body"].strip(), "See you {booked_when}.")
+        self.assertIn("{calendly}", serve.DIALER["scripts"]["emails"]["no_book_intrigue"]["body"])          # untouched
+        serve.save_script_edit({"op": "rule", "text": "Ignore the first one."})
+        self.assertEqual(serve.public_config()["scripts"]["objection_rule"], "Ignore the first one.")
+        serve.save_script_edit({"op": "reset_email", "kind": "booked_confirm"})
+        self.assertIn("calendar", serve.DIALER["scripts"]["emails"]["booked_confirm"]["body"])
+
+
 class Webhook(unittest.TestCase):
     def test_a_booking_posts_to_the_webhook_and_is_logged(self):
         got = []

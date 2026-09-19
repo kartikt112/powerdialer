@@ -73,6 +73,9 @@ function steps() {
   return (t.order[flow] || []).map((id) => Object.assign({ id }, t.steps[id] || {})).filter((s) => visible(s, vars));
 }
 
+export const currentVersion = () => version();
+export function currentStepId() { const l = steps(); return l.length ? l[Math.max(0, Math.min(l.length - 1, idx))].id : ""; }
+
 export function goStep(target) {
   const list = steps();
   if (typeof target === "string") {
@@ -118,14 +121,14 @@ function stepHTML(s, vars) {
   if ((s.chips || []).length) h += '<div class="qa">' + s.chips.map((c, i) =>
     '<details class="obj"><summary>' + esc(c.q) + icon("chevron", "sm") + "</summary><p>" + renderTpl(c.a, vars) + "</p></details>").join("") + "</div>";
   if ((s.branches || []).length) h += '<div class="branches">' + s.branches.map((b, i) =>
-    '<button class="btn sm' + (b.outcome ? " danger" : "") + '" data-branch="' + i + '">' + esc(b.label) + (b.to ? icon("arrowr", "sm") : "") + "</button>").join("") + "</div>";
+    '<button class="btn sm" data-branch="' + i + '">' + esc(b.label) + "</button>").join("") + "</div>";
   if ((s.rules || []).length) h += '<ul class="rules">' + s.rules.map((r) => "<li>" + renderTpl(r, vars) + "</li>").join("") + "</ul>";
   return h;
 }
 
 export function renderScript() {
   $("flow-tabs").querySelectorAll("button").forEach((b) => b.setAttribute("aria-selected", b.getAttribute("data-f") === flow ? "true" : "false"));
-  $("script-ver").textContent = S.cur ? "· " + version() : "";
+  $("script-ver").textContent = S.cur ? version() : "";
   if (objOpen) { renderObjections(); return; }
   $("objpanel").hidden = true; $("treebox").hidden = false;
   if (!S.cur) {
@@ -148,7 +151,7 @@ export function renderScript() {
     esc((s.title || s.id).split(",")[0]) + "</button>").join("");
   $("step").innerHTML = stepHTML(list[idx], vars);
   $("step-next").innerHTML = list.slice(idx + 1, idx + 3).map((s) =>
-    '<button class="upnext" data-go="' + esc(s.id) + '"><span class="eyebrow">Next · ' + esc(s.title || s.id) + "</span><span>" +
+    '<button class="upnext" data-go="' + esc(s.id) + '"><span class="eyebrow">' + esc(s.title || s.id) + "</span><span>" +
     esc(renderPlain((s.say || [""])[0], vars)) + "</span></button>").join("");
   $("b-prev").disabled = idx === 0; $("b-next").disabled = idx >= list.length - 1;
   $("step").scrollTop = 0;
@@ -199,7 +202,7 @@ function renderObjections() {
     if (objEdit === o.key) return '<div class="obj open-edit"><div class="obj-t">' + esc(o.title) + "</div>" + objForm(o) + "</div>";
     const on = o.tag && heard.indexOf(o.tag) >= 0;
     return '<details class="obj" data-okey="' + esc(o.key) + '"' + (o.tag ? ' data-tag="' + esc(o.tag) + '"' : "") + (list.length <= 2 || q ? " open" : "") + "><summary>" + esc(o.title) +
-      (o.edited ? '<span class="pill" style="height:18px;font-size:10.5px">edited</span>' : "") + icon("chevron", "sm") + "</summary>" +
+      (o.edited ? '<span class="pill">edited</span>' : "") + "</summary>" +
       '<ol class="three"><li><span class="eyebrow">Anchor</span>' + renderTpl(o.anchor, vars) + '</li><li><span class="eyebrow">Disrupt</span>' + renderTpl(o.disrupt, vars) +
       '</li><li><span class="eyebrow">Question</span>' + renderTpl(o.question, vars) + "</li></ol>" + (o.note ? '<p class="cue" style="padding:0 12px 10px">' + renderTpl(o.note, vars) + "</p>" : "") +
       '<div class="obj-acts">' + (o.tag && S.cur ? '<button class="chip-t" aria-pressed="' + on + '" data-heard="' + esc(o.tag) + '">' + (on ? "Heard it, logged" : "Heard it") + "</button>" : "") +
@@ -207,7 +210,7 @@ function renderObjections() {
   }).join("");
   $("obj-list").innerHTML = (cards || '<p class="muted">Nothing matches that search.</p>') +
     (objEdit === "__new" ? '<div class="obj open-edit"><div class="obj-t">New rebuttal</div>' + objForm({}) + "</div>"
-      : '<button class="btn sm" data-oe="__new" style="margin-top:6px">' + icon("check", "sm") + "Add a rebuttal</button>");
+      : '<button class="btn sm" data-oe="__new" style="margin-top:12px">Add a rebuttal</button>');
 }
 
 function saveObjection(key) {
@@ -316,6 +319,7 @@ export function wireScript() {
 
   on("lead", () => { flow = S.inbound ? "inbound" : "call"; idx = 0; objOpen = false; renderScript(); renderTimeline(); });
   on("session", () => renderScript());
+  on("scripts", () => renderScript());
   on("call-ended", (reason) => { if (reason === "voicemail") setFlow("voicemail"); });
   on("saved", (p) => {
     const kind = p && emailKindFor(p.outcome);
@@ -324,7 +328,7 @@ export function wireScript() {
     if (!lastEmail) return;
     const mailto = "mailto:" + encodeURIComponent(lastEmail.to || "") + "?subject=" + encodeURIComponent(lastEmail.subject) + "&body=" + encodeURIComponent(lastEmail.body);
     toast("info", "<b>Send the follow-up while it is warm.</b>" + (p.webhook === "queued" ? " Invite webhook fired." : ""), {
-      ms: 45000, actions: [{ html: icon("copy", "sm") + "Copy email <kbd>e</kbd>", run: () => copyEmail(), keep: true },
-                           { html: icon("mail", "sm") + "Open in mail", run: () => { window.location.href = mailto; }, keep: true }] });
+      ms: 45000, actions: [{ html: "Copy email <kbd>e</kbd>", run: () => copyEmail(), keep: true },
+                           { html: "Open in mail", run: () => { window.location.href = mailto; }, keep: true }] });
   });
 }

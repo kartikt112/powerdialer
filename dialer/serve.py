@@ -87,7 +87,10 @@ def load_dialer_config():
     cfg["_raw"] = raw                                       # retry / numbers / compliance, server side only
 
     cfg["scripts"] = dict(cfg.get("scripts") or {})
-    cfg["scripts"]["tree"] = resolve_tree(cfg["scripts"].get("tree") or {})
+    cfg["_tree_raw"] = cfg["scripts"].get("tree") or {}       # as written in config.yaml, before in-app edits
+    cfg["_emails_raw"] = dict(cfg["scripts"].get("emails") or {})
+    cfg["_rule_raw"] = cfg["scripts"].get("objection_rule") or ""
+    cfg["scripts"]["tree"] = resolve_tree(cfg["_tree_raw"])
 
     missing = REQUIRED_OUTCOMES - {o.get("key") for o in cfg["outcomes"]}
     if missing:
@@ -119,6 +122,162 @@ def resolve_tree(tree):
     for version in tree:
         build(version)
     return out
+
+
+# ---- in-app script edits ---------------------------------------------------------
+# config.yaml ships the scripts; the cockpit's editor lays changes over them in
+# DATA_DIR/scripts.json, so a redeploy never loses wording you tuned on the
+# phones, and "reset" is always one click away.
+
+STEP_TEXT = ("title", "cue")
+STEP_LISTS = ("say", "prompts", "rules", "contracts")
+KNOWN_TOKENS = {"first", "last", "dm_first", "dm_name", "company", "title", "process", "oem", "agent", "city", "state",
+                "email", "pain", "callback_number", "calendly", "booked_when"}
+
+
+def scripts_path():
+    return os.path.join(DATA_DIR or ROOT, "scripts.json")
+
+
+def load_script_edits():
+    try:
+        with open(scripts_path()) as fh:
+            edits = json.load(fh)
+    except (OSError, ValueError):
+        edits = {}
+    edits.setdefault("tree", {})
+    edits.setdefault("emails", {})
+    return edits
+
+
+def apply_script_edits():
+    """Rebuild DIALER['scripts'] = config.yaml + the editor's changes."""
+    edits = load_script_edits()
+    raw = json.loads(json.dumps(DIALER.get("_tree_raw") or {}))
+    for version, node in edits["tree"].items():
+        target = raw.setdefault(version, {"extends": node.get("extends")})
+        if node.get("extends") and version not in (DIALER.get("_tree_raw") or {}):
+            target["extends"] = node["extends"]
+        for step_id, fields in (node.get("steps") or {}).items():
+            target.setdefault("steps", {})
+            target["steps"][step_id] = dict(target["steps"].get(step_id) or {}, **fields)
+    scripts = dict(DIALER.get("scripts") or {})
+    scripts["tree"] = resolve_tree(raw)
+    emails = {k: dict(v) for k, v in (DIALER.get("_emails_raw") or {}).items()}
+    for kind, fields in edits["emails"].items():
+        emails[kind] = dict(emails.get(kind) or {}, **fields)
+    scripts["emails"] = emails
+    scripts["objection_rule"] = edits.get("objection_rule") or DIALER.get("_rule_raw") or ""
+    DIALER["scripts"] = scripts
+    return edits
+
+
+def script_text_problems(values):
+    """(error, warnings) for text headed into a script."""
+    warnings = []
+    for text in values:
+        if "\u2014" in text:
+            return "No em dashes in scripts. Use a comma or a full stop.", []
+        opens = re.findall(r"\{[?!](\w+)\}", text)
+        closes = re.findall(r"\{/(\w+)\}", text)
+        if sorted(opens) != sorted(closes):
+            return "A {?token}...{/token} block is not closed.", []
+        for token in re.findall(r"\{[?!/]?(\w+)\}", text):
+            if token not in KNOWN_TOKENS and f"Unknown token {{{token}}}" not in warnings:
+                warnings.append(f"Unknown token {{{token}}}")
+    return None, warnings
+
+
+def save_script_edit(data):
+    """One editor action. Returns (error, warnings)."""
+    op = data.get("op")
+    edits = load_script_edits()
+    tree = (DIALER.get("scripts") or {}).get("tree") or {}
+    warnings = []
+
+    if op == "step":
+        version, step_id = str(data.get("version") or ""), str(data.get("id") or "")
+        if version not in tree or step_id not in tree[version]["steps"]:
+            return "That step does not exist.", []
+        fields, incoming = {}, data.get("fields") or {}
+        for key in STEP_TEXT:
+            if key in incoming:
+                fields[key] = str(incoming[key] or "").strip()[:600]
+        for key in STEP_LISTS:
+            if key in incoming:
+                fields[key] = [str(x).strip()[:1500] for x in (incoming[key] or []) if str(x).strip()][:12]
+        if "chips" in incoming:
+            fields["chips"] = [{"q": str(c.get("q") or "").strip()[:200], "a": str(c.get("a") or "").strip()[:600]}
+                               for c in (incoming["chips"] or []) if str(c.get("q") or "").strip()][:12]
+        if "say" in fields and not fields["say"]:
+            return "A step needs at least one line to say.", []
+        texts = [v for v in fields.values() if isinstance(v, str)] + \
+                [x for v in fields.values() if isinstance(v, list) for x in (v if v and isinstance(v[0], str) else [])] + \
+                [c[k] for c in fields.get("chips", []) for k in ("q", "a")]
+        error, warnings = script_text_problems(texts)
+        if error:
+            return error, []
+        node = edits["tree"].setdefault(version, {})
+        node.setdefault("steps", {})
+        node["steps"][step_id] = dict(node["steps"].get(step_id) or {}, **fields)
+
+    elif op == "reset_step":
+        version, step_id = str(data.get("version") or ""), str(data.get("id") or "")
+        ((edits["tree"].get(version) or {}).get("steps") or {}).pop(step_id, None)
+
+    elif op == "email":
+        kind = str(data.get("kind") or "")
+        if kind not in (DIALER.get("_emails_raw") or {}):
+            return "That email template does not exist.", []
+        subject, body = str(data.get("subject") or "").strip()[:200], str(data.get("body") or "").strip()[:4000]
+        if not subject or not body:
+            return "An email needs a subject and a body.", []
+        error, warnings = script_text_problems([subject, body])
+        if error:
+            return error, []
+        edits["emails"][kind] = {"subject": subject, "body": body + "\n"}
+
+    elif op == "reset_email":
+        edits["emails"].pop(str(data.get("kind") or ""), None)
+
+    elif op == "rule":
+        text = str(data.get("text") or "").strip()[:600]
+        error, warnings = script_text_problems([text])
+        if error:
+            return error, []
+        edits["objection_rule"] = text
+
+    elif op == "version":
+        name = re.sub(r"[^a-z0-9_]", "", str(data.get("name") or "").lower())[:12]
+        base = str(data.get("extends") or "")
+        if not name or name in tree:
+            return "Give the new version a short name that is not taken, like v3.", []
+        if base not in tree:
+            return "Pick an existing version to copy.", []
+        edits["tree"][name] = {"extends": base, "steps": {}}
+
+    elif op == "delete_version":
+        name = str(data.get("name") or "")
+        if name in (DIALER.get("_tree_raw") or {}):
+            return "That version comes from config.yaml. Remove it there.", []
+        edits["tree"].pop(name, None)
+
+    else:
+        return "Unknown editor action.", []
+
+    os.makedirs(os.path.dirname(scripts_path()), exist_ok=True)
+    with open(scripts_path(), "w") as fh:
+        json.dump(edits, fh, indent=2)
+    apply_script_edits()
+    return None, warnings
+
+
+def edited_map():
+    """Which steps / emails carry in-app edits, so the editor can offer a reset."""
+    edits = load_script_edits()
+    return {"steps": {v: sorted((n.get("steps") or {})) for v, n in edits["tree"].items()},
+            "emails": sorted(edits["emails"]), "rule": bool(edits.get("objection_rule")),
+            "custom_versions": [v for v in edits["tree"] if v not in (DIALER.get("_tree_raw") or {})]}
 
 
 def objections_path():
@@ -199,6 +358,8 @@ def public_config():
     """What the browser may see: everything except the raw file."""
     out = {k: v for k, v in DIALER.items() if not k.startswith("_") and k != "booking_webhook_url"}
     out["scripts"] = dict(out.get("scripts") or {}, objections=merged_objections())
+    out["script_versions"] = script_versions()
+    out["scripts_edited"] = edited_map()
     out["booking_webhook"] = bool(DIALER.get("booking_webhook_url"))
     return out
 
@@ -838,6 +999,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "callbacks": db.callbacks_list(),
                                "stats": db.stats(self._agent(data))})
 
+        if route == "/api/scripts":
+            error, warnings = save_script_edit(data)
+            if error:
+                return self._json({"error": error}, 400)
+            cfg = public_config()
+            return self._json({"ok": True, "warnings": warnings, "scripts": cfg["scripts"],
+                               "script_versions": cfg["script_versions"], "scripts_edited": cfg["scripts_edited"]})
+
         if route == "/api/objections":
             error = save_objection(data)
             if error:
@@ -957,6 +1126,7 @@ def main():
     VM_DROP_TEXT = os.environ.get("VM_DROP_TEXT", VM_DROP_TEXT)
     DIALER.clear()
     DIALER.update(load_dialer_config())
+    apply_script_edits()
     db.configure(DIALER["outcomes"], DIALER.get("stats_timezone"), objection_labels())
     migrate()
 

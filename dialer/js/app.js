@@ -10,7 +10,8 @@ import { S, on, emit, actions, outcome, busy } from "./state.js";
 import { api, withAgent } from "./api.js";
 import { toast, say, banner, modal, closeModal, closeMenus, menuOpen, toggleMenu, copyText } from "./ui.js";
 import { simulatorCarrier, twilioCarrier } from "./carrier.js";
-import { renderScript, renderTimeline, wireScript, scriptKey, openObjections, closeObjections, objectionsOpen, setFlow, emailFor, copyEmail } from "./script.js";
+import { renderScript, renderTimeline, wireScript, scriptKey, openObjections, closeObjections, objectionsOpen, setFlow, emailFor, copyEmail, currentStepId, currentVersion } from "./script.js";
+import { openScriptEditor } from "./editor.js";
 import { renderOutcomes, setSuggested, resetWrap, wrapKey, getWrapMode, backToOutcomes, undo, wireWrap, draftKey, submitOutcome, freshCall } from "./wrap.js";
 import { refreshStats, statsSheet, wireFunnel } from "./funnel.js";
 import { sessionStartModal, sessionEndCard } from "./session.js";
@@ -29,18 +30,17 @@ function renderStats(s) {
   S.stats = s;
   renderCap();
   renderWindowLine(s.window);
-  const late = s.callbacks_overdue || 0;
-  $("k-cb").innerHTML = (late || s.callbacks_due) + "<small>" + (late ? "overdue" : "due") + "</small>";
-  $("k-cb").className = late ? "alert" : "";
-  $("n-queue").textContent = s.queue == null ? "" : s.queue;
-  $("n-calls").textContent = (s.today && s.today.dials) || "";
+  const late = s.callbacks_overdue || 0, due = s.callbacks_due || 0;
+  $("k-cb-btn").hidden = !(late || due);
+  $("k-cb-btn").className = "btn quiet" + (late ? " alert" : "");
+  $("k-cb").textContent = late ? late + " callback" + (late > 1 ? "s" : "") + " overdue" : due + " callback" + (due > 1 ? "s" : "") + " due";
+  $("h-queue").textContent = s.queue == null ? "" : s.queue;
+  $("h-calls").textContent = (s.today && s.today.dials) || "";
   const caps = s.caps || [], open = caps.filter((c) => c.used < c.cap && (s.parked || []).indexOf(c.number) < 0);
   if (caps.length && !open.length) {
-    banner("danger", "<b>Every caller ID is capped or parked for today.</b> The queue is closed until tomorrow. " +
-           "Pushing past the cap is how numbers get labelled as spam.");
+    banner("danger", "<b>Every caller ID is capped or parked for today.</b> The queue is closed until tomorrow. Pushing past the cap is how numbers get labelled as spam.");
   } else if ((s.parked || []).length) {
-    banner("warn", "<b>" + s.parked.length + " caller ID" + (s.parked.length > 1 ? "s are" : " is") +
-           " parked</b> for a low pickup rate. Check the Numbers tab before adding more dials to it.");
+    banner("warn", "<b>" + s.parked.length + " caller ID" + (s.parked.length > 1 ? "s are" : " is") + " parked</b> for a low pickup rate. Check Numbers before adding more dials to it.");
   } else banner("", "");
   emit("stats", s);
 }
@@ -51,23 +51,22 @@ function renderCap() {
   const caps = s.caps || [];
   const mine = (S.cur && caps.find((c) => c.number === S.cur.caller_id)) || caps[0];
   if (!mine) return;
-  $("k-dials").innerHTML = mine.used + "<small>/ " + mine.cap + "</small>";
-  $("k-dials").className = mine.used >= mine.cap ? "over" : "";
-  $("k-dials").title = "Dials today from " + fmtPhone(mine.number) + ". Cap " + mine.cap + (mine.cap < 100 ? " while it warms up." : ".");
+  $("k-dials").textContent = mine.used + " of " + mine.cap + " today";
+  $("k-dials").className = mine.used >= mine.cap ? "cb-note rec" : "muted";
+  $("k-dials").title = "Dials today from " + fmtPhone(mine.number) + ". Cap " + mine.cap + (mine.cap < 100 ? " while the number warms up." : ".");
 }
 
 function renderWindowLine(w) {
   const el = $("window-line");
   if (!w) { el.textContent = ""; return; }
-  if (!w.enforced) { el.className = "window-line"; el.innerHTML = icon("info", "sm") + "Simulator: calling windows not enforced · <b>" + w.eligible + "</b> leads eligible"; return; }
+  if (!w.enforced) { el.className = "window-line"; el.innerHTML = "Simulator, windows open · " + w.eligible + " eligible"; return; }
   if (w.open) {
     el.className = "window-line " + w.tier;
-    el.innerHTML = icon("clock", "sm") + "Now dialing: <b>" + w.zones.map((z) => esc(z.label)).join(" + ") + " " + w.tier + " window</b>, " +
-      w.eligible + " lead" + (w.eligible === 1 ? "" : "s") + " eligible";
+    el.innerHTML = "<b>" + w.zones.map((z) => esc(z.label)).join(" + ") + " " + w.tier + " window</b> · " + w.eligible + " eligible";
   } else {
     el.className = "window-line closed";
-    el.innerHTML = icon("clock", "sm") + (w.next_zone ? "Windows closed. Next: <b>" + esc(w.next_zone) + " " + esc(w.next_tier || "") + "</b> " + esc(w.next_local || "") + " their time"
-      : "No lead is inside a calling window");
+    el.innerHTML = w.next_zone ? "Windows closed · next <b>" + esc(w.next_zone) + " " + esc(w.next_tier || "") + "</b> " + esc(w.next_local || "") + " their time"
+      : "No lead is inside a calling window";
   }
 }
 
@@ -93,9 +92,8 @@ function renderLocal() {
   const now = new Date(), tier = tierOf(now, l.tz_offset), open = !S.cfg.windows.enforced || tier !== null;
   const place = l.city ? l.city + (l.state ? ", " + l.state : "") : (l.state || "");
   const label = { power: "power window", secondary: "secondary window", gap: "between windows, callbacks only" }[tier] || "outside calling hours";
-  $("c-local").className = "localtime" + (open ? "" : " closed") + (tier === "power" ? " power" : "");
-  $("c-local").innerHTML = icon(open ? "clock" : "alert", "sm") + "<b>" + leadClock(now, l.tz_offset) + "</b>" +
-    "<span>" + esc((l.zone ? l.zone + " · " : "") + (place || "their time")) + "</span><span>· " + label + "</span>";
+  $("c-local").className = "fact-line" + (open ? "" : " closed");
+  $("c-local").innerHTML = [place, leadClock(now, l.tz_offset) + (l.zone ? " " + l.zone : ""), label].filter(Boolean).map((x) => "<span>" + esc(x) + "</span>").join("");
 }
 
 function renderLead() {
@@ -104,57 +102,51 @@ function renderLead() {
   $("empty").hidden = !!l;
   if (!l) { renderScript(); renderTimeline(); return; }
 
-  const tags = [];
-  if (S.inbound) tags.push('<span class="pill good">' + icon("phone", "sm") + "Inbound</span>");
-  if (l.vm_allowed === false && !S.inbound) tags.push('<span class="pill warn" title="Messages go out on tries ' + (S.cfg.voicemail_attempts || []).join(", ") + ' only">No voicemail this try</span>');
-  if (l.list_id === "manual") tags.push('<span class="pill">Manual dial</span>');
-  if (l.rank) tags.push('<span class="pill' + (l.rank >= 80 ? " good" : "") + '">Rank <b>' + esc(l.rank) + "</b></span>");
-  tags.push(l.attempts ? '<span class="pill">Attempt <b>' + (l.attempts + 1) + "</b> of " + S.cfg.max_attempts + "</span>"
-                       : '<span class="pill info">Fresh</span>');
-  if (l.callback_at) tags.push('<span class="pill warn">' + icon("calendar", "sm") + "Callback due</span>");
-  if (l.last_disposition) tags.push('<span class="pill">Last: <b>' + esc(outcome(l.last_disposition).label) + "</b></span>");
-  $("c-tags").innerHTML = tags.join("");
+  // One quiet line above the name. Only what changes how you open the call is coloured.
+  const flags = [];
+  if (S.inbound) flags.push('<span class="pill good">Inbound call</span>');
+  if (l.callback_at) flags.push('<span class="pill warn">Callback due</span>');
+  if (l.list_id === "manual") flags.push('<span class="pill">Dialed by hand</span>');
+  flags.push('<span class="pill">' + (l.attempts ? "Try " + (l.attempts + 1) + " of " + S.cfg.max_attempts : "First call") + "</span>");
+  if (l.rank) flags.push('<span class="pill">Rank ' + esc(l.rank) + "</span>");
+  if (l.last_disposition) flags.push('<span class="pill">Last time: ' + esc(outcome(l.last_disposition).label.toLowerCase()) + "</span>");
+  if (l.vm_allowed === false && !S.inbound) flags.push('<span class="pill warn" title="Messages go out on tries ' + (S.cfg.voicemail_attempts || []).join(", ") + ' only">No voicemail this try</span>');
+  (l.tags || []).forEach((t) => flags.push('<span class="pill warn">' + esc(t.replace(/_/g, " ")) + "</span>"));
+  $("c-tags").innerHTML = flags.join("");
 
   $("c-company").textContent = l.co || "Unknown company";
   const name = ((l.first || "") + " " + (l.last || "")).trim();
-  $("c-person").innerHTML = (name ? "<b>" + esc(name) + "</b>" : "") + (l.title ? (name ? " · " : "") + esc(l.title) : "") ||
-                            '<span class="muted">No contact name on file</span>';
+  $("c-person").innerHTML = (name ? "<b>" + esc(name) + "</b>" : "") + (l.title ? (name ? ", " : "") + esc(l.title) : "") ||
+                            "No contact name on file";
   $("c-phone").textContent = fmtPhone(l.phone);
   renderLocal();
 
-  const chips = [];
-  if (l.caller_id) chips.push('<span class="pill" title="Local presence: ' + esc(l.caller_id_reason || "") + '">' + icon("phone", "sm") + "Calls from <b>" + esc(fmtPhone(l.caller_id)) + "</b>" + (l.caller_id_reason ? " · " + esc(l.caller_id_reason) : "") + "</span>");
-  if (l.process) chips.push('<span class="pill info">' + icon("factory", "sm") + "<b>" + esc(l.process) + "</b></span>");
-  if (l.oem) chips.push('<span class="pill">Supplies <b>' + esc(l.oem) + "</b></span>");
-  if (l.size) chips.push('<span class="pill"><b>' + esc(l.size) + "</b> employees</span>");
-  if (l.ppap_per_year) chips.push('<span class="pill"><b>' + esc(l.ppap_per_year) + "</b> PPAPs / year</span>");
-  if (l.li_status) chips.push('<span class="pill' + (l.li_status === "accepted" ? " good" : "") + '">LinkedIn ' + esc(l.li_status) + "</span>");
-  if ((l.tags || []).length) l.tags.forEach((t) => chips.push('<span class="pill warn">' + esc(t.replace(/_/g, " ")) + "</span>"));
-  $("c-chips").innerHTML = chips.join("");
-  $("c-chips").hidden = !chips.length;
+  const facts = [];
+  if (l.process) facts.push(esc(l.process.replace(/^./, (c) => c.toUpperCase())));
+  if (l.oem) facts.push("supplies " + esc(l.oem));
+  if (l.size) facts.push(esc(l.size) + " people");
+  if (l.ppap_per_year) facts.push(esc(l.ppap_per_year) + " PPAPs a year");
+  if (l.li_status) facts.push("LinkedIn " + esc(l.li_status));
+  $("c-chips").innerHTML = facts.map((x) => "<span>" + x + "</span>").join("");
 
   const q = encodeURIComponent, links = [];
   if (l.co) {
     if (l.website) links.push(["Website", /^https?:/.test(l.website) ? l.website : "https://" + l.website]);
-    links.push(["Google", "https://www.google.com/search?q=" + q(l.co + " PPAP")]);
     links.push(["LinkedIn", l.linkedin_url || "https://www.linkedin.com/search/results/all/?keywords=" + q((name + " " + l.co).trim())]);
+    links.push(["Google", "https://www.google.com/search?q=" + q(l.co + " PPAP")]);
     links.push(["Thomasnet", "https://www.google.com/search?q=" + q('site:thomasnet.com "' + l.co + '"')]);
   }
-  $("c-links").innerHTML = links.map((x) =>
-    '<a class="btn sm quiet" target="_blank" rel="noopener noreferrer" href="' + esc(x[1]) + '">' + esc(x[0]) + icon("external", "sm") + "</a>").join("");
-  $("c-links").hidden = !links.length;
+  $("c-links").innerHTML = links.map((x) => '<a target="_blank" rel="noopener noreferrer" href="' + esc(x[1]) + '">' + esc(x[0]) + "</a>").join("");
 
   const last = (l.history || []).find((h) => h.notes);
-  const painLine = l.pain ? '<div><span class="eyebrow">Pain, last time</span><q>' + esc(l.pain) + "</q></div>" : "";
+  const painLine = l.pain ? '<span class="eyebrow">Their pain, last time</span><q>' + esc(l.pain) + "</q>" : "";
   $("c-note").hidden = !last && !painLine;
-  if (!last && painLine) $("c-note").innerHTML = painLine;
-  if (last) {
-    $("c-note").innerHTML = "<div><q>" + esc(last.notes) + '</q><span class="by">' + esc(last.agent || "agent") +
-      " · " + esc(outcome(last.disposition).label) + " · " + esc((last.at || "").slice(0, 10)) + "</span>" + (painLine ? '<div style="margin-top:8px">' + painLine + "</div>" : "") + "</div>";
-  }
+  $("c-note").innerHTML = (painLine ? "<div>" + painLine + "</div>" : "") + (last ? '<div' + (painLine ? ' style="margin-top:8px"' : "") + '><q>' + esc(last.notes) +
+    '</q><span class="by">' + esc(outcome(last.disposition).label) + ", " + esc((last.at || "").slice(0, 10)) + "</span></div>" : "");
+
   if (l.caller_id) {
-    $("cid").textContent = fmtPhone(l.caller_id);
-    $("cid").parentNode.title = "Chosen for this lead by " + (l.caller_id_reason || "default") + ".";
+    $("cid").textContent = "From " + fmtPhone(l.caller_id);
+    $("cid").title = "Chosen for this lead by " + (l.caller_id_reason || "default") + ".";
   }
   renderCap();
   emit("lead", l);
@@ -164,19 +156,17 @@ function renderEmpty(kind, text) {
   S.cur = null;
   renderLead();
   emit("lead", null);
-  let glyph = "inbox", title = "No lead to dial", acts = "";
+  let title = "Nothing to dial", acts = "";
   if (kind === "paused") {
-    glyph = "coffee"; title = "Paused" + (S.session.paused ? " · " + S.session.paused : "");
-    text = "Your lead went back to the queue. Inbound calls still ring here. Callbacks and the inbox stay open on the left.";
-    acts = '<button class="btn primary" data-act="resume">' + icon("play") + 'Resume <kbd class="onfill">p</kbd></button>';
+    title = "Paused" + (S.session.paused ? ", " + S.session.paused.toLowerCase() : "");
+    text = "Your lead went back to the queue. Inbound calls still ring here.";
+    acts = '<button class="btn primary" data-act="resume">Resume <kbd>p</kbd></button>';
   } else if (kind === "connecting") {
-    glyph = "bolt"; title = "Connecting";
+    title = "Connecting";
   } else {
-    acts = '<button class="btn" data-act="load">' + icon("upload") + "Load a list</button>" +
-           '<button class="btn" data-act="manual">' + icon("keypad") + "Dial a number</button>" +
+    acts = '<button class="btn" data-act="load">Load a list</button><button class="btn" data-act="manual">Dial a number</button>' +
            '<button class="btn quiet" data-act="refresh">Check again</button>';
   }
-  $("e-glyph").innerHTML = icon(glyph, "lg");
   $("e-title").textContent = title;
   $("e-text").textContent = text || "";
   $("e-acts").innerHTML = acts;
@@ -216,7 +206,7 @@ function setState(s) {
   if (!wrap) resetWrap();
 
   $("cb-label").textContent = { IDLE: S.session.paused ? "Paused" : "Standing by", READY: "Ready", DIALING: "Dialing", LIVE: "On call", WRAP: "Wrap-up" }[s];
-  $("cb-timer").className = "timer num" + (inCall || ringing || wrap ? "" : " dim");
+  $("cb-timer").className = "timer" + (inCall || ringing || wrap ? "" : " dim");
   if (s === "IDLE" || s === "READY") $("cb-timer").textContent = "00:00";
   lamp(S.session.paused && s === "IDLE" ? "Paused" : { IDLE: "Idle", READY: "Ready", DIALING: "Dialing", LIVE: "On a call", WRAP: "Wrap-up" }[s]);
   renderSession();
@@ -249,7 +239,7 @@ function renderSession() {
   b.textContent = ss.paused ? "Resume" : "Start session";
   b.title = ss.paused ? "Resume dialing (p)" : "Auto-dial through the queue (p)";
   $("pause-wrap").hidden = !(ss.on && !ss.paused);
-  $("b-pause").innerHTML = (ss.pausePending ? "Pausing after call" : "Pause") + icon("chevron", "sm");
+  $("b-pause").textContent = ss.pausePending ? "Pausing after this call" : "Pause";
   $("session-clock").hidden = !ss.on;
   $("session-eta").hidden = !ss.on;
   renderEta();
@@ -475,7 +465,7 @@ const QUALITY = { "high-rtt": "High latency", "high-jitter": "Choppy audio", "hi
 function simMode() {
   carrier = simulatorCarrier(); S.live = false;
   $("mode-pill").hidden = false;
-  $("mode-pill").innerHTML = icon("info", "sm") + "Simulator";
+  $("mode-pill").textContent = "Simulator";
   $("mode-pill").title = "No carrier credentials on the server. Calls are simulated, outcomes are saved for real.";
 }
 
@@ -556,8 +546,6 @@ function setMuted(v) {
   if (activeCall) activeCall.mute(v);
   $("b-mute").classList.toggle("on", v);
   $("b-mute").setAttribute("aria-pressed", v ? "true" : "false");
-  const svg = $("b-mute").querySelector("svg");
-  if (svg) svg.outerHTML = icon(v ? "micoff" : "mic");
   $("mute-t").textContent = v ? "Unmute" : "Mute";
 }
 
@@ -716,18 +704,13 @@ document.addEventListener("keydown", (e) => {
 
 function hydrateIcons() {
   document.querySelectorAll("[data-ic]").forEach((n) => { n.outerHTML = icon(n.getAttribute("data-ic"), n.getAttribute("data-cls") || ""); });
-  $("b-rail").innerHTML = icon("list");
-  $("b-keys").innerHTML = icon("keyboard");
-  $("b-manual").innerHTML = icon("keypad");
-  $("b-copy").innerHTML = icon("copy", "sm");
-  $("brand-mark").innerHTML = icon("bolt", "sm");
   $("keys").innerHTML = keysHTML("data-tone");
 }
 
 function renderPauseMenu() {
   $("pause-menu").innerHTML = (S.cfg.pause_reasons || ["Break"]).map((r) =>
-    '<button role="menuitem" data-pause="' + esc(r) + '">' + icon("coffee") + esc(r) + "</button>").join("") +
-    '<hr><button role="menuitem" data-end="1">' + icon("x") + "End session</button>";
+    '<button role="menuitem" data-pause="' + esc(r) + '">' + esc(r) + "</button>").join("") +
+    '<hr><button role="menuitem" data-end="1">End session</button>';
 }
 
 function renderAgent() {
@@ -750,6 +733,7 @@ function wire() {
   $("b-decline").addEventListener("click", declineIncoming);
   $("b-manual").addEventListener("click", manualModal);
   $("b-keys").addEventListener("click", shortcutsModal);
+  $("b-edit-script").addEventListener("click", () => openScriptEditor(currentStepId(), currentVersion()));
   $("b-rail").addEventListener("click", () => document.body.classList.toggle("rail-open"));
   $("k-cb-btn").addEventListener("click", () => { selectTab("callbacks"); document.body.classList.add("rail-open"); });
   $("keys").addEventListener("click", (e) => { const b = e.target.closest("[data-tone]"); if (b) sendTone(b.getAttribute("data-tone")); });
@@ -772,7 +756,7 @@ function wire() {
       else agentPicker(false).then(() => { renderAgent(); renderScript(); });
     } else if (act === "load") pickList();
     else if (act === "log") logModal();
-    else if (act === "keys") shortcutsModal();
+    else if (act === "scripts") openScriptEditor(currentStepId(), currentVersion());
     else if (act === "settings") settingsModal();
   });
   document.addEventListener("click", (e) => {

@@ -146,6 +146,21 @@ Call Booked, Sales Calls Done, Sales, Sales $, Notes`.
   with `e`, and `dialer.booking_webhook_url` is called so the invite can be
   created outside the app.
 
+- **Editing scripts.** *Edit* on the script rail (or *Edit scripts* in the
+  agent menu) opens every step of every version, both follow-up emails and the
+  objections rule, with a live preview against the lead on screen. You can
+  change wording mid-session. Edits are kept in `DATA_DIR/scripts.json` over
+  `config.yaml`, survive a redeploy, and each one has a reset back to the
+  shipped text. *New version* copies a version so you can change one step and
+  A/B it. Objection cards are edited in their own panel (`o`, then *Edit*).
+  Em dashes and unclosed `{?token}` blocks are refused; unknown tokens are
+  flagged.
+
+The interface follows a few rules, written at the top of `dialer/app.css`:
+type carries the hierarchy, one neutral palette, colour only where it means
+something (green go, red stop, amber attention), metadata as plain text rather
+than pills, hairlines instead of boxes, sentence-case labels.
+
 Keys: `p` session, `space` dial or hang up, `1`-`9` `0` outcomes, `enter` save
 or accept the suggestion, `z` undo, arrows walk the script, `b` book, `o`
 objections, `e` copy email, `t` stats, `n` notes, `/` search, `d` dial a
@@ -179,7 +194,7 @@ Excel/CSV
 | `dialer/policy.py` | Pure rules: windows, retry scheduler, voicemail tries, caller-ID picker, caps, parking |
 | `dialer/funnel.py` | Pure funnel maths: counts, rates, attribution, the Imperium sheet |
 | `dialer/index.html`, `dialer/app.css` | Cockpit markup and design system |
-| `dialer/js/*.js` | Cockpit modules: app, wrap, script, funnel, rails, session, modals, carrier, ui, util, state, api |
+| `dialer/js/*.js` | Cockpit modules: app, wrap, script, editor, funnel, rails, session, modals, carrier, ui, util, state, api |
 | `dialer/demo_leads.csv` | Sample shops seeded into an empty database in simulator mode |
 | `dialer/TWILIO.md` | Twilio setup, the caller-ID pool Function, the Telnyx path |
 | `tests/` | Policy, funnel, database (frozen clock), config lint, list prep |

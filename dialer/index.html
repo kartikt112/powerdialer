@@ -15,160 +15,163 @@
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="app.css">
 </head>
 <body data-state="idle">
 
 <!-- ================================================================ top -->
 <header class="top">
-  <button class="btn icon quiet rail-toggle" id="b-rail" aria-label="Show queue and callbacks"></button>
-  <div class="brand"><i class="mark" id="brand-mark"></i><span>Powerdialer</span></div>
+  <button class="btn quiet rail-toggle" id="b-rail" aria-label="Show queue and callbacks">Lists</button>
+
+  <span class="lamp" id="lamp" role="status"><i></i><span id="lamp-text">Idle</span></span>
 
   <div class="session">
-    <span class="lamp" id="lamp" role="status"><i></i><span id="lamp-text">Idle</span></span>
-    <button class="btn primary sm" id="b-session">Start session</button>
+    <button class="btn primary" id="b-session">Start session</button>
     <div class="menu-wrap" id="pause-wrap" hidden>
-      <button class="btn sm" id="b-pause" aria-haspopup="menu" aria-expanded="false">Pause</button>
+      <button class="btn" id="b-pause" aria-haspopup="menu" aria-expanded="false">Pause</button>
       <div class="menu left" id="pause-menu" role="menu" hidden></div>
     </div>
-    <span class="session-clock num" id="session-clock" hidden>00:00:00</span>
-    <span class="session-eta num" id="session-eta" hidden></span>
+    <span class="session-clock" id="session-clock" hidden>00:00:00</span>
+    <span class="session-eta" id="session-eta" hidden></span>
   </div>
 
   <span class="window-line" id="window-line" role="status"></span>
 
-  <div class="kpis" aria-label="Queue">
-    <div class="kpi"><span class="eyebrow">Caller ID cap</span><b id="k-dials">0<small>/ 150</small></b></div>
-    <button class="kpi kpi-btn" id="k-cb-btn" title="Open callbacks"><span class="eyebrow">Callbacks</span><b id="k-cb">0<small>due</small></b></button>
-  </div>
-
   <div class="tools">
-    <button class="btn icon quiet" id="b-keys" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"></button>
+    <button class="btn quiet" id="k-cb-btn" hidden><span id="k-cb"></span></button>
+    <button class="btn quiet" id="b-keys" title="Keyboard shortcuts (?)">Keys</button>
     <div class="menu-wrap">
       <button class="avatar" id="b-agent" aria-haspopup="menu" aria-expanded="false"><i id="agent-ini">A</i><span id="agent-name">agent</span></button>
       <div class="menu" id="agent-menu" role="menu" hidden>
         <div class="head"><b id="am-name">Agent</b><span id="am-seat">seat</span></div>
-        <button role="menuitem" data-act="switch"><span data-ic="user"></span>Switch agent</button>
-        <button role="menuitem" data-act="load"><span data-ic="upload"></span>Load list…</button>
-        <a role="menuitem" href="/api/dnc.csv" download="dnc.csv"><span data-ic="download"></span>Export do-not-call list</a>
+        <button role="menuitem" data-act="scripts">Edit scripts</button>
+        <button role="menuitem" data-act="load">Load a list</button>
+        <button role="menuitem" data-act="settings">Settings</button>
         <hr>
-        <button role="menuitem" data-act="log"><span data-ic="activity"></span>Activity log</button>
-        <button role="menuitem" data-act="keys"><span data-ic="keyboard"></span>Keyboard shortcuts<kbd>?</kbd></button>
-        <button role="menuitem" data-act="settings"><span data-ic="sliders"></span>Settings</button>
+        <button role="menuitem" data-act="switch">Switch agent</button>
+        <button role="menuitem" data-act="log">Activity log</button>
+        <a role="menuitem" href="/api/dnc.csv" download="dnc.csv">Export do-not-call list</a>
       </div>
     </div>
     <input type="file" id="f-list" accept=".xlsx,.xls,.csv" hidden>
   </div>
 </header>
 
-<!-- ========================================================== funnel bar -->
-<div class="statsbar" id="statsbar" aria-label="Funnel">
-  <div class="seg sb-range" role="tablist" id="sb-range">
+<!-- ========================================================== funnel line -->
+<div class="funnel" id="statsbar" aria-label="Funnel">
+  <div class="tabs-text" role="tablist" id="sb-range">
     <button role="tab" data-r="today" aria-selected="true">Today</button>
     <button role="tab" data-r="week" aria-selected="false">Week</button>
     <button role="tab" data-r="all" aria-selected="false">All</button>
   </div>
-  <div class="sb-cells" id="sb-cells"></div>
-  <button class="btn sm quiet" id="sb-more" title="Full stats, script versions, CSV (t)"><span data-ic="chart" data-cls="sm"></span>Details</button>
+  <div class="funnel-cells" id="sb-cells"></div>
+  <button class="btn quiet sm" id="sb-more" title="Rates against targets, script versions, CSV (t)">Details</button>
 </div>
 
-<div class="banner" id="banner" hidden><span data-ic="alert"></span><span id="banner-text"></span></div>
+<div class="banner" id="banner" hidden><span id="banner-text"></span></div>
 
 <!-- ============================================================== panes -->
 <div class="panes">
 
-  <aside class="rail" id="rail" aria-label="Queue, callbacks, calls and inbox">
-    <div class="tabs" role="tablist">
-      <button class="tab" role="tab" data-tab="queue" aria-selected="true" title="Queue"><span data-ic="list"></span><span>Queue</span><span class="count" id="n-queue"></span></button>
-      <button class="tab" role="tab" data-tab="callbacks" aria-selected="false" title="Callbacks"><span data-ic="clock"></span><span>Callbacks</span><span class="count" id="n-cb"></span></button>
-      <button class="tab" role="tab" data-tab="bookings" aria-selected="false" title="Booked calls"><span data-ic="calendar"></span><span>Bookings</span><span class="count hot" id="n-book"></span></button>
-      <button class="tab" role="tab" data-tab="calls" aria-selected="false" title="Today's calls"><span data-ic="activity"></span><span>Calls</span><span class="count" id="n-calls"></span></button>
-      <button class="tab" role="tab" data-tab="inbox" aria-selected="false" title="Missed calls and voicemails"><span data-ic="inbox"></span><span>Inbox</span><span class="count hot" id="n-inbox"></span></button>
-      <button class="tab" role="tab" data-tab="numbers" aria-selected="false" title="Caller ID health"><span data-ic="hash"></span><span>Numbers</span><span class="count hot" id="n-num"></span></button>
+  <aside class="rail" id="rail" aria-label="Queue, callbacks, bookings, calls, inbox and numbers">
+    <nav class="railnav" role="tablist" aria-orientation="vertical">
+      <button class="tab" role="tab" data-tab="queue" aria-selected="true"><span data-ic="list"></span><span class="tl">Queue</span><span class="count" id="n-queue" hidden></span></button>
+      <button class="tab" role="tab" data-tab="callbacks" aria-selected="false"><span data-ic="clock"></span><span class="tl">Callbacks</span><span class="count" id="n-cb"></span></button>
+      <button class="tab" role="tab" data-tab="bookings" aria-selected="false"><span data-ic="calendar"></span><span class="tl">Bookings</span><span class="count" id="n-book"></span></button>
+      <button class="tab" role="tab" data-tab="calls" aria-selected="false"><span data-ic="activity"></span><span class="tl">Calls</span><span class="count" id="n-calls" hidden></span></button>
+      <button class="tab" role="tab" data-tab="inbox" aria-selected="false"><span data-ic="inbox"></span><span class="tl">Inbox</span><span class="count" id="n-inbox"></span></button>
+      <button class="tab" role="tab" data-tab="numbers" aria-selected="false"><span data-ic="hash"></span><span class="tl">Numbers</span><span class="count" id="n-num"></span></button>
+    </nav>
+
+    <div class="railbody">
+      <section class="panel" id="p-queue" role="tabpanel">
+        <div class="panel-head">
+          <h2>Queue <span class="muted" id="h-queue"></span></h2>
+          <button class="btn quiet sm" id="b-manual" title="Dial a number (d)">Dial a number</button>
+        </div>
+        <label class="search"><span class="sr">Search leads</span>
+          <input class="field" id="q" type="search" placeholder="Search company, person, number" autocomplete="off"></label>
+        <div class="list" id="l-queue"></div>
+      </section>
+
+      <section class="panel" id="p-callbacks" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Callbacks</h2></div>
+        <div class="list" id="l-callbacks"></div>
+      </section>
+
+      <section class="panel" id="p-bookings" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Booked calls</h2></div>
+        <div class="list" id="l-bookings"></div>
+      </section>
+
+      <section class="panel" id="p-calls" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Today's calls <span class="muted" id="h-calls"></span></h2></div>
+        <div class="breakdown" id="breakdown" hidden></div>
+        <div class="list" id="l-calls"></div>
+      </section>
+
+      <section class="panel" id="p-inbox" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Inbox</h2></div>
+        <div class="list" id="l-inbox"></div>
+        <audio id="vm-audio" controls hidden></audio>
+      </section>
+
+      <section class="panel" id="p-numbers" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Caller IDs</h2></div>
+        <div class="list" id="l-numbers"></div>
+      </section>
     </div>
-
-    <section class="panel" id="p-queue" role="tabpanel">
-      <div class="panel-head">
-        <label class="search"><span class="sr">Search leads</span><span data-ic="search"></span>
-          <input class="field" id="q" type="search" placeholder="Search company, person, number" autocomplete="off"><kbd>/</kbd></label>
-        <button class="btn icon" id="b-manual" aria-label="Dial a number" title="Dial a number (d)"></button>
-      </div>
-      <div class="list" id="l-queue"></div>
-    </section>
-
-    <section class="panel" id="p-callbacks" role="tabpanel" hidden>
-      <div class="list" id="l-callbacks"></div>
-    </section>
-
-    <section class="panel" id="p-bookings" role="tabpanel" hidden>
-      <div class="list" id="l-bookings"></div>
-    </section>
-
-    <section class="panel" id="p-numbers" role="tabpanel" hidden>
-      <div class="list" id="l-numbers"></div>
-    </section>
-
-    <section class="panel" id="p-calls" role="tabpanel" hidden>
-      <div class="breakdown" id="breakdown" hidden></div>
-      <div class="list" id="l-calls"></div>
-    </section>
-
-    <section class="panel" id="p-inbox" role="tabpanel" hidden>
-      <div class="list" id="l-inbox"></div>
-      <audio id="vm-audio" controls style="width:calc(100% - 20px);margin:0 10px 10px" hidden></audio>
-    </section>
   </aside>
 
   <div class="work">
     <div class="scroller">
 
       <main class="lead-pane" id="lead-pane">
-        <!-- lead -->
         <article class="lead" id="lead" hidden>
-          <div class="lead-head">
-            <div class="tags" id="c-tags"></div>
+          <header class="lead-head">
+            <p class="flags" id="c-tags"></p>
             <h1 class="company" id="c-company"></h1>
             <p class="person" id="c-person"></p>
-          </div>
+          </header>
 
           <div class="phone-row">
             <span class="phone" id="c-phone"></span>
-            <button class="btn icon sm quiet" id="b-copy" aria-label="Copy number" title="Copy number (c)"></button>
-            <span class="localtime" id="c-local"></span>
+            <button class="btn quiet sm" id="b-copy" title="Copy number (c)">Copy</button>
           </div>
 
-          <div class="chips" id="c-chips"></div>
-          <div class="links" id="c-links"></div>
-          <div class="callout" id="c-note" hidden></div>
+          <div class="facts">
+            <p class="fact-line" id="c-local"></p>
+            <p class="fact-line" id="c-chips"></p>
+            <p class="fact-line links" id="c-links"></p>
+          </div>
+
+          <blockquote class="callout" id="c-note" hidden></blockquote>
 
           <div class="notes-box">
-            <div class="row-h">
-              <label class="eyebrow" for="notes">Notes <span style="text-transform:none;letter-spacing:0">· saved with the outcome</span></label>
-              <span class="saved" id="notes-saved"></span>
-            </div>
-            <textarea class="field" id="notes" rows="3" placeholder="What was said, who to ask for, objections…   (press n to jump here, Esc to leave)"></textarea>
+            <div class="row-h"><label class="lbl" for="notes">Notes</label><span class="saved" id="notes-saved"></span></div>
+            <textarea class="field" id="notes" rows="3" placeholder="What was said, who to ask for. Saved with the outcome."></textarea>
           </div>
 
           <div class="discovery" id="discovery">
-            <div class="d-pain"><label class="lbl" for="d-pain">Pain, in their words</label><input class="field" id="d-pain" data-call="pain" maxlength="300" autocomplete="off" placeholder="Mirror it back, then type it here"></div>
-            <div><label class="lbl" for="d-ppap">PPAPs / year</label><input class="field num" id="d-ppap" data-call="ppap_per_year" maxlength="12" autocomplete="off"></div>
+            <div class="d-pain"><label class="lbl" for="d-pain">Pain, in their words</label><input class="field" id="d-pain" data-call="pain" maxlength="300" autocomplete="off"></div>
+            <div><label class="lbl" for="d-ppap">PPAPs a year</label><input class="field" id="d-ppap" data-call="ppap_per_year" maxlength="12" autocomplete="off"></div>
             <div><label class="lbl" for="d-oem">OEMs</label><input class="field" id="d-oem" data-call="oem" maxlength="80" autocomplete="off"></div>
           </div>
 
           <section class="wrap" id="wrap" hidden aria-label="Wrap-up">
-            <div class="wrap-h"><h2 id="wrap-title">How did it go?</h2><span id="wrap-sub">Pick what happened</span></div>
+            <div class="wrap-h"><h2 id="wrap-title">How did it go?</h2><span id="wrap-sub" class="muted">Pick what happened</span></div>
             <div class="outcomes" id="outcomes"></div>
 
             <!-- level 2: only when someone picked up -->
             <div class="subpanel" id="l2" hidden>
               <div class="l2-head">
-                <span class="pill" id="l2-outcome"></span>
+                <h3 id="l2-outcome"></h3>
                 <button class="btn quiet sm" id="l2-back">Change <kbd>esc</kbd></button>
               </div>
 
               <div id="l2-when" hidden>
-                <span class="eyebrow">Call back when?</span>
+                <span class="lbl">Call back when</span>
                 <div class="cb-grid" id="cb-grid"></div>
                 <div class="cb-custom">
                   <input class="field" type="datetime-local" id="cb-custom" aria-label="Custom callback time, in your local time">
@@ -177,7 +180,7 @@
               </div>
 
               <div id="l2-book" hidden>
-                <span class="eyebrow">Booked for, on THEIR clock <span id="l2-book-place" style="text-transform:none;letter-spacing:0"></span></span>
+                <span class="lbl">Booked for, on their clock <span class="hint" id="l2-book-place"></span></span>
                 <div class="cb-grid" id="bk-grid"></div>
                 <div class="cb-custom">
                   <input class="field" type="datetime-local" id="l2-booked" aria-label="Booked date and time in the prospect's time zone">
@@ -186,7 +189,7 @@
               </div>
 
               <div>
-                <span class="eyebrow">Objections heard <span style="text-transform:none;letter-spacing:0">· tap all that came up</span></span>
+                <span class="lbl">Objections heard</span>
                 <div class="chipset" id="l2-obj"></div>
                 <input class="field" id="l2-other" hidden maxlength="70" placeholder="The other objection, in their words">
               </div>
@@ -195,30 +198,28 @@
 
               <div class="formrow3">
                 <div><label class="lbl" for="l2-dm">Decision maker</label><input class="field" id="l2-dm" maxlength="60" autocomplete="off"></div>
-                <div><label class="lbl" for="l2-email">Email <span id="l2-email-req" hidden>(needed for the invite)</span></label><input class="field" id="l2-email" type="email" maxlength="70" autocomplete="off"></div>
-                <div><label class="lbl" for="l2-mobile">Mobile</label><input class="field num" id="l2-mobile" type="tel" maxlength="20" autocomplete="off"></div>
+                <div><label class="lbl" for="l2-email">Email <span class="hint" id="l2-email-req" hidden>needed for the invite</span></label><input class="field" id="l2-email" type="email" maxlength="70" autocomplete="off"></div>
+                <div><label class="lbl" for="l2-mobile">Mobile</label><input class="field" id="l2-mobile" type="tel" maxlength="20" autocomplete="off"></div>
               </div>
-              <div><label class="lbl" for="l2-pain">Pain, in their words</label><input class="field" id="l2-pain" maxlength="300" autocomplete="off" placeholder="e.g. quality guy loses three days a package"></div>
+              <div><label class="lbl" for="l2-pain">Pain, in their words</label><input class="field" id="l2-pain" maxlength="300" autocomplete="off"></div>
 
               <p class="err" id="l2-err" role="alert"></p>
-              <div class="acts"><button class="btn primary" id="l2-save">Save and next <kbd class="onfill">enter</kbd></button></div>
+              <div class="acts"><button class="btn primary" id="l2-save">Save and next <kbd>enter</kbd></button></div>
             </div>
 
             <div class="subpanel confirm" id="dnc-panel" hidden>
               <p><b>Block this number for good?</b> It comes off every list, now and in future loads. Use it when they asked not to be called again.</p>
               <div class="acts">
-                <button class="btn danger solid" id="dnc-yes">Yes, do not call <kbd class="onfill">enter</kbd></button>
+                <button class="btn danger solid" id="dnc-yes">Yes, do not call <kbd>enter</kbd></button>
                 <button class="btn" id="dnc-no">Cancel <kbd>esc</kbd></button>
               </div>
             </div>
           </section>
         </article>
 
-        <!-- nothing to dial -->
         <div class="lead" id="empty">
           <div class="empty">
-            <span class="glyph" id="e-glyph"></span>
-            <h1 id="e-title">Connecting…</h1>
+            <h1 id="e-title">Connecting</h1>
             <p id="e-text"></p>
             <div class="acts" id="e-acts"></div>
           </div>
@@ -228,12 +229,15 @@
       <aside class="right" aria-label="Script and history">
         <section id="script-sec">
           <div class="sect-h">
-            <span class="eyebrow">Script <span id="script-ver" style="text-transform:none;letter-spacing:0"></span></span>
-            <button class="btn sm" id="b-obj" title="Objections (o)"><span data-ic="shield" data-cls="sm"></span>Objections<kbd>o</kbd></button>
+            <h2>Script <span class="muted" id="script-ver"></span></h2>
+            <span class="sect-tools">
+              <button class="btn quiet sm" id="b-obj" title="Objections (o)">Objections</button>
+              <button class="btn quiet sm" id="b-edit-script" title="Edit this step">Edit</button>
+            </span>
           </div>
 
           <div id="treebox">
-            <div class="seg" role="tablist" id="flow-tabs">
+            <div class="tabs-text" role="tablist" id="flow-tabs">
               <button role="tab" data-f="call" aria-selected="true">Call</button>
               <button role="tab" data-f="voicemail" aria-selected="false">Voicemail</button>
               <button role="tab" data-f="inbound" aria-selected="false">They called back</button>
@@ -242,23 +246,24 @@
             <div class="step" id="step"></div>
             <div class="step-next" id="step-next"></div>
             <div class="step-nav" id="step-nav">
-              <button class="btn sm" id="b-prev"><span data-ic="arrowl" data-cls="sm"></span>Back<kbd>&larr;</kbd></button>
-              <button class="btn sm" id="b-next">Next<kbd>&rarr;</kbd><span data-ic="arrowr" data-cls="sm"></span></button>
+              <button class="btn quiet sm" id="b-prev">Back</button>
+              <button class="btn quiet sm" id="b-next">Next</button>
             </div>
           </div>
 
           <div class="objpanel" id="objpanel" hidden>
-            <div class="panel-head" style="padding:0 0 10px;border:none">
-              <label class="search"><span class="sr">Search objections</span><span data-ic="search"></span>
+            <div class="obj-head">
+              <label class="search"><span class="sr">Search objections</span>
                 <input class="field" id="obj-q" type="search" placeholder="What did they just say?" autocomplete="off"></label>
-              <button class="btn icon" id="obj-close" aria-label="Back to the script" title="Back to the script (esc)"><span data-ic="x"></span></button>
+              <button class="btn quiet sm" id="obj-close" title="Back to the script (esc)">Close</button>
             </div>
             <p class="objrule" id="obj-rule"></p>
             <div id="obj-list"></div>
           </div>
         </section>
+
         <section>
-          <div class="sect-h"><span class="eyebrow">History</span><span class="muted" id="h-count"></span></div>
+          <div class="sect-h"><h2>History <span class="muted" id="h-count"></span></h2></div>
           <div class="timeline" id="timeline"></div>
         </section>
       </aside>
@@ -267,34 +272,34 @@
     <!-- ========================================================= call bar -->
     <footer class="callbar" id="callbar">
       <div class="cb-state" id="cb-state">
-        <span class="eyebrow" id="cb-label">Standing by</span>
-        <span class="timer dim" id="cb-timer">00:00</span>
+        <span class="timer" id="cb-timer">00:00</span>
+        <span class="cb-label" id="cb-label">Standing by</span>
       </div>
       <div class="countdown" id="countdown" hidden>
         <span class="ring" id="ring"><svg viewBox="0 0 40 40"><circle class="track" cx="20" cy="20" r="17"/><circle class="fill" cx="20" cy="20" r="17"/></svg><b id="cd-n">3</b></span>
-        <span class="txt"><b>Dialing next lead</b><span><kbd>esc</kbd> hold · <kbd>space</kbd> dial now</span></span>
+        <span class="txt"><b>Dialing next</b><span>esc holds, space dials now</span></span>
       </div>
 
       <div class="cb-main">
-        <button class="big go" id="b-dial"><span data-ic="phone" data-cls="lg"></span>Dial <kbd>space</kbd></button>
-        <button class="big stop" id="b-hangup" hidden><span data-ic="phone" data-cls="lg hang"></span>Hang up <kbd>space</kbd></button>
-        <button class="btn" id="b-mute" disabled><span data-ic="mic"></span><span id="mute-t">Mute</span><kbd>m</kbd></button>
-        <button class="btn" id="b-keypad" disabled aria-expanded="false"><span data-ic="keypad"></span>Keypad<kbd>k</kbd></button>
-        <button class="btn" id="b-vmdrop" disabled title="Play your recorded voicemail and move on"><span data-ic="voicemail"></span>Drop VM<kbd>v</kbd></button>
-        <button class="btn quiet" id="b-skip" disabled><span data-ic="skip"></span>Skip<kbd>s</kbd></button>
+        <button class="big go" id="b-dial">Dial <kbd>space</kbd></button>
+        <button class="big stop" id="b-hangup" hidden>Hang up <kbd>space</kbd></button>
+        <button class="btn quiet" id="b-mute" disabled title="Mute (m)"><span id="mute-t">Mute</span></button>
+        <button class="btn quiet" id="b-keypad" disabled aria-expanded="false" title="Keypad (k)">Keypad</button>
+        <button class="btn quiet" id="b-vmdrop" disabled>Drop voicemail</button>
+        <button class="btn quiet" id="b-skip" disabled title="Skip (s)">Skip</button>
       </div>
 
       <div class="cb-side">
-        <span class="pill warn" id="quality" hidden><span data-ic="signal" data-cls="sm"></span><span id="quality-t">Poor connection</span></span>
-        <span class="pill danger rec" id="rec" hidden><i></i>REC</span>
-        <span class="pill" id="mode-pill" hidden></span>
-        <span class="cid">Calling from<b id="cid">-</b></span>
+        <span class="cb-note warn" id="quality" hidden><span id="quality-t">Poor connection</span></span>
+        <span class="cb-note rec" id="rec" hidden>Recording</span>
+        <span class="cb-note" id="mode-pill" hidden></span>
+        <span class="cid"><span id="cid">-</span><span class="muted" id="k-dials"></span></span>
       </div>
 
       <div class="keypad-pop" id="keypad" hidden>
-        <div class="keypad-out num" id="keypad-out" aria-live="polite"></div>
+        <div class="keypad-out" id="keypad-out" aria-live="polite"></div>
         <div class="keys" id="keys"></div>
-        <p class="keypad-hint" id="keypad-hint">Number keys send tones while you are on a call.</p>
+        <p class="hint" id="keypad-hint" style="text-align:center;margin-top:8px">Number keys send tones on a live call.</p>
       </div>
     </footer>
   </div>
@@ -303,11 +308,10 @@
 <!-- ============================================================ overlays -->
 <div class="overlay incoming" id="incoming" hidden role="alertdialog" aria-labelledby="in-co">
   <div class="dialog">
-    <div class="dh"><div><span class="eyebrow">Incoming call</span><h2 id="in-co" style="font-size:24px;margin-top:8px">Unknown caller</h2><p class="sub" id="in-who"></p></div>
-      <span class="ringer"><span data-ic="phone" data-cls="lg"></span></span></div>
-    <div class="acts">
-      <button class="big go" id="b-accept" style="justify-content:center">Answer</button>
-      <button class="btn" id="b-decline" style="height:46px">Decline</button>
+    <div><span class="lbl">Incoming call</span><h2 id="in-co" style="font-size:22px;margin-top:4px">Unknown caller</h2><p class="sub" id="in-who"></p></div>
+    <div class="acts stretch">
+      <button class="big go" id="b-accept">Answer</button>
+      <button class="btn" id="b-decline" style="height:44px">Decline</button>
     </div>
   </div>
 </div>

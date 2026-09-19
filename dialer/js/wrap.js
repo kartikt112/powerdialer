@@ -109,8 +109,8 @@ function openLevel2(o) {
   const c = S.call, off = S.cur.tz_offset;
   $("dnc-panel").hidden = true; $("l2").hidden = false;
   $("l2-err").textContent = "";
-  $("l2-outcome").className = "pill " + (o.tone === "plain" ? "" : o.tone);
-  $("l2-outcome").innerHTML = "<b>" + esc(o.label) + "</b>";
+  $("l2-outcome").className = o.tone === "good" ? "good" : "";
+  $("l2-outcome").textContent = o.label;
 
   const isCb = o.kind === "callback", isBook = !!o.booked;
   $("l2-when").hidden = !isCb;
@@ -124,7 +124,7 @@ function openLevel2(o) {
   }
   if (isBook) {
     const place = S.cur.city ? S.cur.city + (S.cur.state ? ", " + S.cur.state : "") : (S.cur.state || "their time zone");
-    $("l2-book-place").textContent = "· " + place;
+    $("l2-book-place").textContent = place;
     $("bk-grid").innerHTML = bookOptions(off).map((b, i) =>
       '<button class="outcome cb-opt" aria-pressed="' + (c.booked_for_local === b.local) + '" data-local="' + b.local + '"><span class="l1"><kbd>' + (i + 1) +
       "</kbd>" + esc(b.label) + '</span><span class="l2">' + esc(myTimeHint(b.when)) + "</span></button>").join("");
@@ -141,7 +141,9 @@ function openLevel2(o) {
   $("l2-dm").value = c.dm_name || ""; $("l2-email").value = c.email || "";
   $("l2-mobile").value = c.mobile || ""; $("l2-pain").value = c.pain || "";
   $("l2").scrollIntoView({ block: "nearest", behavior: "smooth" });
-  (isBook && !c.booked_for_local ? $("l2-booked") : isBook && !c.email ? $("l2-email") : $("l2-save")).focus();
+  // Keep focus off the inputs so 1-4 pick a time and enter saves. Only a missing email pulls focus.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  if (isBook && c.booked_for_local && !c.email) $("l2-email").focus();
 }
 
 function bookedHint() {
@@ -224,7 +226,7 @@ function offerUndo(id, o, lead, duration, when) {
   lastUndo = entry;
   entry.toast = toast(o.kind === "dnc" ? "warn" : "success",
     "<b>" + esc(o.label) + "</b> · " + esc(lead.co || fmtPhone(lead.phone)) + esc(when || ""),
-    { ms: 6500, action: id ? { html: icon("undo", "sm") + "Undo <kbd>z</kbd>", run: undo } : null,
+    { ms: 6500, action: id ? { html: "Undo <kbd>z</kbd>", run: undo } : null,
       onClose() { if (lastUndo === entry) lastUndo = null; } });
 }
 

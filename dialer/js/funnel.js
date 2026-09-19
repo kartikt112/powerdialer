@@ -32,44 +32,34 @@ function rateDefs(f) {
   };
 }
 
-function chip(d) {
+/* A rate is plain grey text. It only takes a colour when it is off target,
+   or green once it clears one: the bar should be quiet on a good day. */
+function rate(d, withName) {
   if (d.v == null) return "";
   const g = grade(d.v, d.target, d.sample);
-  const tip = d.how + (d.target != null ? ". Target " + fmtPct(d.target, 0) + "+" : "");
-  return '<span class="rate ' + g + '" title="' + esc(tip) + '">' + (d.short ? d.short + " " : "") + fmtPct(d.v) + "</span>";
+  const tip = d.name + ": " + d.how + (d.target != null ? ". Target " + fmtPct(d.target, 0) + " or more" : "");
+  return '<span class="r ' + (g === "none" ? "" : g) + '" title="' + esc(tip) + '">' + (withName && d.short ? d.short + " " : "") + fmtPct(d.v) + "</span>";
 }
-
-function cell(label, count, chips, opts) {
-  opts = opts || {};
-  return '<div class="sb-cell' + (opts.star ? " star" : "") + '"' + (opts.title ? ' title="' + esc(opts.title) + '"' : "") + ">" +
-    '<span class="eyebrow">' + (opts.star ? icon("star") : "") + esc(label) + "</span>" +
-    '<span class="v"><b>' + count + "</b>" + (chips || "") + "</span></div>";
-}
+const cell = (n, label, extra, title) => '<span class="fc"' + (title ? ' title="' + esc(title) + '"' : "") + "><b>" + n + "</b>" + label + (extra || "") + "</span>";
 
 function renderBar(s) {
   if (!s || !s.funnel) return;
   last = s;
   const f = s.funnel, d = rateDefs(f), t = T(), today = s.today || f;
-  const convTarget = t.conversations_per_day || 10;
-  const convGrade = today.conversations >= convTarget ? "good" : "";
   let html =
-    cell("Dials", fmtNum(f.dials)) +
-    cell("Pickups", fmtNum(f.pickups), chip(d.pickup)) +
-    cell("DMs pitched", fmtNum(f.pitched), chip(d.pr) + chip(d.dm_reach)) +
-    cell("Resonated", fmtNum(f.resonated), chip(d.rr)) +
-    cell("Offered", fmtNum(f.offered), chip(d.offer)) +
-    cell("Booked", fmtNum(f.booked), chip(d.abr), { star: true, title: "ABR is the star metric. Target " + fmtPct(t.abr, 0) + "+, team benchmark " + fmtPct(t.abr_benchmark, 1) }) +
-    cell("Calls done", fmtNum(f.showed), chip(d.sur)) +
-    cell("Sales", fmtNum(f.sales), chip(d.scr) + (f.sales_amount ? "<small>$" + fmtNum(Math.round(f.sales_amount)) + "</small>" : "")) +
-    cell("Convos today", '<span class="' + (convGrade ? "rate good" : "") + '" style="font:inherit;padding:0 3px">' + today.conversations + "</span><small>/ " + convTarget + "</small>", "",
-         { star: true, title: "Unique leads today where someone picked up and you offered the meeting or they resonated. Beginner star metric." });
+    cell(fmtNum(f.dials), "dials") +
+    cell(fmtNum(f.pickups), "pickups", rate(d.pickup)) +
+    cell(fmtNum(f.pitched), "pitched", rate(d.pr)) +
+    cell(fmtNum(f.resonated), "resonated", rate(d.rr)) +
+    cell(fmtNum(f.offered), "offered", rate(d.offer)) +
+    cell(fmtNum(f.booked), "booked", rate(d.abr, true), "ABR is the star metric. Target " + fmtPct(t.abr, 0) + " or more, team benchmark " + fmtPct(t.abr_benchmark, 1));
+  if (f.showed || f.sales) html += cell(fmtNum(f.showed), "calls done", rate(d.sur)) + cell(fmtNum(f.sales), "sales", rate(d.scr) + (f.sales_amount ? '<span class="r">$' + fmtNum(Math.round(f.sales_amount)) + "</span>" : ""));
+  html += '<span class="fc sep"></span>' +
+    cell(today.conversations + "<span class=\"r\" style=\"font-weight:400\">/" + (t.conversations_per_day || 10) + "</span>", "conversations today", "",
+         "Unique leads today where someone picked up and you offered the meeting or they resonated.");
   if (s.session && S.session.on) {
-    const hrs = Math.max(S.session.activeSec, 60) / 3600, ss = s.session;
-    html += cell("This session /hr", Math.round(ss.dials / hrs), "<small>" + (ss.pitched / hrs).toFixed(1) + " pitch · " + (ss.booked / hrs).toFixed(1) + " book</small>");
-  }
-  if ((s.objections || []).length) {
-    html += '<div class="sb-cell"><span class="eyebrow">Top objections today</span><span class="sb-obj">' +
-      s.objections.map((o) => "<b>" + esc(o.label) + "</b> " + o.count).join(" · ") + "</span></div>";
+    const hrs = Math.max(S.session.activeSec, 60) / 3600;
+    html += cell(Math.round(s.session.dials / hrs), "dials an hour", '<span class="r">' + (s.session.pitched / hrs).toFixed(1) + " pitches · " + (s.session.booked / hrs).toFixed(1) + " bookings</span>");
   }
   $("sb-cells").innerHTML = html;
 }
@@ -101,17 +91,18 @@ function sheetHTML(s) {
   const t = T();
   return '<div class="dh"><div><h2>Funnel</h2><p class="sub">Sales calls done and sales are credited to the date of the dial that booked them, not the date of the meeting. ' +
     "Days run on " + esc(S.cfg.stats_timezone || "US Eastern") + " time.</p></div>" + closeX() + "</div>" +
-    '<div class="seg" id="sh-range" style="width:fit-content">' + ["today", "week", "all"].map((r) =>
+    '<div class="seg" id="sh-range">' + ["today", "week", "all"].map((r) =>
       '<button data-r="' + r + '" aria-selected="' + (r === s.range) + '">' + { today: "Today", week: "This week", all: "All time" }[r] + "</button>").join("") + "</div>" +
     '<div class="stat-grid"><div class="stat-scroll"><table class="stat-table"><thead><tr><th>Rate</th><th>Now</th><th>Target</th></tr></thead><tbody>' + rateRows +
     '</tbody></table><p class="muted" style="margin-top:10px;font-size:12px">ABR team benchmark ' + fmtPct(t.abr_benchmark, 1) + ". Rates stay grey until " + (t.min_sample || 10) +
     " in the denominator. Pickup rate under " + fmtPct(t.pickup, 0) + " across 50+ dials on one caller ID usually means that number is spam-labelled.</p></div>" +
     '<div class="stat-scroll"><table class="stat-table"><thead><tr><th>Count</th><th></th></tr></thead><tbody>' +
     countRows.map((r) => "<tr><td>" + r[0] + "</td><td>" + r[1] + "</td></tr>").join("") + "</tbody></table></div></div>" +
-    '<div><span class="eyebrow">By script version</span><div class="stat-scroll"><table class="stat-table" style="margin-top:8px"><thead><tr><th>Version</th><th>Dials</th><th>Pitched</th><th>Reso</th><th>Booked</th><th>PR</th><th>RR</th><th>ABR</th></tr></thead><tbody>' +
+    '<div><h3 style="font-size:13px">By script version</h3><div class="stat-scroll"><table class="stat-table" style="margin-top:6px"><thead><tr><th>Version</th><th>Dials</th><th>Pitched</th><th>Reso</th><th>Booked</th><th>PR</th><th>RR</th><th>ABR</th></tr></thead><tbody>' +
     (scripts || '<tr><td colspan="8">No calls in this range yet.</td></tr>') + "</tbody></table></div></div>" +
-    '<div class="acts" style="justify-content:flex-start"><span class="eyebrow" style="align-self:center">Imperium tracker CSV</span>' +
-    ["today", "week", "all"].map((r) => '<a class="btn sm" href="/api/funnel.csv?range=' + r + '" download>' + icon("download", "sm") + { today: "Today", week: "This week", all: "All time" }[r] + "</a>").join("") + "</div>";
+    ((s.objections || []).length ? '<p class="hint">Top objections today: ' + s.objections.map((o) => esc(o.label) + " (" + o.count + ")").join(", ") + ".</p>" : "") +
+    '<div class="acts" style="justify-content:flex-start;align-items:baseline"><span class="hint">Imperium tracker CSV</span>' +
+    ["today", "week", "all"].map((r) => '<a class="btn sm" style="text-decoration:none" href="/api/funnel.csv?range=' + r + '" download>' + { today: "Today", week: "This week", all: "All time" }[r] + "</a>").join("") + "</div>";
 }
 
 export function statsSheet(which) {
