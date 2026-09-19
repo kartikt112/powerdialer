@@ -16,3 +16,7 @@ __pycache__/
 .preview/
 .venv/
 .gstack/
+
+# In-app script and objection edits (live next to the database)
+/scripts.json
+/objections.json
