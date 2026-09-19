@@ -35,13 +35,9 @@
     <span class="session-clock num" id="session-clock" hidden>00:00:00</span>
   </div>
 
-  <div class="kpis" aria-label="Today">
-    <div class="kpi"><span class="eyebrow">Dials</span><b id="k-dials">0<small>/ 150</small></b><span class="goal" title="Daily goal"><i id="k-goal"></i></span></div>
-    <div class="kpi"><span class="eyebrow">Connects</span><b id="k-conn">0<small>-</small></b></div>
-    <div class="kpi opt2"><span class="eyebrow">Interested</span><b id="k-int">0</b></div>
-    <div class="kpi opt"><span class="eyebrow">Talk time</span><b id="k-talk">0:00</b></div>
-    <div class="kpi opt"><span class="eyebrow">Pace</span><b id="k-pace">-<small>/hr</small></b></div>
-    <button class="kpi kpi-btn opt2" id="k-cb-btn" title="Open callbacks"><span class="eyebrow">Callbacks</span><b id="k-cb">0<small>due</small></b></button>
+  <div class="kpis" aria-label="Queue">
+    <div class="kpi"><span class="eyebrow">Caller ID cap</span><b id="k-dials">0<small>/ 150</small></b></div>
+    <button class="kpi kpi-btn" id="k-cb-btn" title="Open callbacks"><span class="eyebrow">Callbacks</span><b id="k-cb">0<small>due</small></b></button>
   </div>
 
   <div class="tools">
@@ -62,6 +58,17 @@
     <input type="file" id="f-list" accept=".xlsx,.xls,.csv" hidden>
   </div>
 </header>
+
+<!-- ========================================================== funnel bar -->
+<div class="statsbar" id="statsbar" aria-label="Funnel">
+  <div class="seg sb-range" role="tablist" id="sb-range">
+    <button role="tab" data-r="today" aria-selected="true">Today</button>
+    <button role="tab" data-r="week" aria-selected="false">Week</button>
+    <button role="tab" data-r="all" aria-selected="false">All</button>
+  </div>
+  <div class="sb-cells" id="sb-cells"></div>
+  <button class="btn sm quiet" id="sb-more" title="Full stats, script versions, CSV (t)"><span data-ic="chart" data-cls="sm"></span>Details</button>
+</div>
 
 <div class="banner" id="banner" hidden><span data-ic="alert"></span><span id="banner-text"></span></div>
 
@@ -131,24 +138,57 @@
           </div>
 
           <section class="wrap" id="wrap" hidden aria-label="Wrap-up">
-            <div class="wrap-h"><h2 id="wrap-title">How did it go?</h2><span>Pick one to save and move on</span></div>
+            <div class="wrap-h"><h2 id="wrap-title">How did it go?</h2><span id="wrap-sub">Pick what happened</span></div>
             <div class="outcomes" id="outcomes"></div>
 
-            <div class="subpanel" id="cb-panel" hidden>
-              <span class="eyebrow">Call back when?</span>
-              <div class="cb-grid" id="cb-grid"></div>
-              <div class="cb-custom">
-                <input class="field" type="datetime-local" id="cb-custom" aria-label="Custom callback time, in your local time">
-                <button class="btn" id="cb-custom-go">Set callback</button>
-                <span class="hint" id="cb-hint">Your local time.</span>
-                <button class="btn quiet sm" id="cb-back" style="margin-left:auto">Back <kbd>esc</kbd></button>
+            <!-- level 2: only when someone picked up -->
+            <div class="subpanel" id="l2" hidden>
+              <div class="l2-head">
+                <span class="pill" id="l2-outcome"></span>
+                <button class="btn quiet sm" id="l2-back">Change <kbd>esc</kbd></button>
               </div>
+
+              <div id="l2-when" hidden>
+                <span class="eyebrow">Call back when?</span>
+                <div class="cb-grid" id="cb-grid"></div>
+                <div class="cb-custom">
+                  <input class="field" type="datetime-local" id="cb-custom" aria-label="Custom callback time, in your local time">
+                  <span class="hint" id="cb-hint">Or pick a time. Your local time.</span>
+                </div>
+              </div>
+
+              <div id="l2-book" hidden>
+                <span class="eyebrow">Booked for, on THEIR clock <span id="l2-book-place" style="text-transform:none;letter-spacing:0"></span></span>
+                <div class="cb-grid" id="bk-grid"></div>
+                <div class="cb-custom">
+                  <input class="field" type="datetime-local" id="l2-booked" aria-label="Booked date and time in the prospect's time zone">
+                  <span class="hint" id="l2-booked-hint"></span>
+                </div>
+              </div>
+
+              <div>
+                <span class="eyebrow">Objections heard <span style="text-transform:none;letter-spacing:0">· tap all that came up</span></span>
+                <div class="chipset" id="l2-obj"></div>
+                <input class="field" id="l2-other" hidden maxlength="70" placeholder="The other objection, in their words">
+              </div>
+
+              <label class="check"><input type="checkbox" id="l2-offered"><span>I asked for the meeting</span></label>
+
+              <div class="formrow3">
+                <div><label class="lbl" for="l2-dm">Decision maker</label><input class="field" id="l2-dm" maxlength="60" autocomplete="off"></div>
+                <div><label class="lbl" for="l2-email">Email <span id="l2-email-req" hidden>(needed for the invite)</span></label><input class="field" id="l2-email" type="email" maxlength="70" autocomplete="off"></div>
+                <div><label class="lbl" for="l2-mobile">Mobile</label><input class="field num" id="l2-mobile" type="tel" maxlength="20" autocomplete="off"></div>
+              </div>
+              <div><label class="lbl" for="l2-pain">Pain, in their words</label><input class="field" id="l2-pain" maxlength="300" autocomplete="off" placeholder="e.g. quality guy loses three days a package"></div>
+
+              <p class="err" id="l2-err" role="alert"></p>
+              <div class="acts"><button class="btn primary" id="l2-save">Save and next <kbd class="onfill">enter</kbd></button></div>
             </div>
 
             <div class="subpanel confirm" id="dnc-panel" hidden>
               <p><b>Block this number for good?</b> It comes off every list, now and in future loads. Use it when they asked not to be called again.</p>
               <div class="acts">
-                <button class="btn danger solid" id="dnc-yes">Yes, do not call <kbd style="background:rgba(255,255,255,.18);border-color:transparent;color:#fff">enter</kbd></button>
+                <button class="btn danger solid" id="dnc-yes">Yes, do not call <kbd class="onfill">enter</kbd></button>
                 <button class="btn" id="dnc-no">Cancel <kbd>esc</kbd></button>
               </div>
             </div>

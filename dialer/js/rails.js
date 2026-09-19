@@ -1,7 +1,7 @@
 /* Left rail: queue, callbacks, today's calls, inbox. Each tab owns a refresh
    and a render; clicks are delegated from the rail root. */
 import { $, icon, esc, fmtPhone, fmtClock, parseUTC, toServer, leadClock, leadDay, rel, myClock, debounce, store } from "./util.js";
-import { S, on, actions, outcome } from "./state.js";
+import { S, on, emit, actions, outcome } from "./state.js";
 import { api, withAgent } from "./api.js";
 import { toast, openModal, closeModal, closeX } from "./ui.js";
 import { cbGridHTML, localInputMin } from "./wrap.js";
@@ -132,6 +132,7 @@ function renderCalls() {
   $("l-calls").innerHTML = S.data.calls.map((c) => {
     const o = outcome(c.disposition), at = parseUTC(c.at);
     const name = ((c.first || "") + " " + (c.last || "")).trim();
+    if (c.booked) return bookingCard(c, true);
     return '<button class="row" data-open="' + esc(c.phone) + '" title="Open this lead">' +
       '<span class="dot" style="color:' + (TONE_COLOR[o.tone] || "var(--text-3)") + '">' + icon(o.connect ? "phone" : "missed") + "</span>" +
       '<span class="main"><span class="t1">' + esc(c.company || fmtPhone(c.phone)) + '</span><span class="t2">' + esc(o.label) +
@@ -139,6 +140,63 @@ function renderCalls() {
       '<span class="meta"><span class="num">' + (at ? myClock(at) : "") + "</span>" + (c.duration ? fmtClock(c.duration) : "") + "</span>" +
       (c.notes ? '<span class="quote">' + esc(c.notes) + "</span>" : "") + "</button>";
   }).join("") || note("No calls yet today", "Every outcome you save lands here with its notes, and survives a reload.");
+}
+
+/* ------------------------------------------- booked calls + follow-through -- */
+
+export function statusPill(b) {
+  if (b.sale) return '<span class="pill good">Sale' + (b.sale_amount ? " · $" + Number(b.sale_amount).toLocaleString("en-US") : "") + "</span>";
+  if (b.show_status === "SHOWED") return '<span class="pill good">Showed</span>';
+  if (b.show_status === "NO_SHOW") return '<span class="pill danger">No-show</span>';
+  if (b.show_status === "RESCHEDULED") return '<span class="pill warn">Rescheduled</span>';
+  return "";
+}
+
+export function bookingCard(b, compact) {
+  const when = parseUTC(b.booked_for), name = b.dm_name || ((b.first || "") + " " + (b.last || "")).trim();
+  const past = when && when <= new Date();
+  return '<div class="row card"><span class="dot" style="color:var(--good)">' + icon("calendar") + "</span>" +
+    '<span class="main"><span class="t1">' + esc(b.company || fmtPhone(b.phone)) + '</span><span class="t2">' + esc(name || fmtPhone(b.phone)) + "</span></span>" +
+    '<span class="meta"><span class="num' + (past && !b.show_status ? " late" : "") + '">' + (when ? rel(when) : "") + "</span>" +
+    (when ? leadDay(when, b.tz_offset) + " " + leadClock(when, b.tz_offset) + " theirs" : "") + "</span>" +
+    (b.pain && !compact ? '<span class="quote">&ldquo;' + esc(b.pain) + "&rdquo;</span>" : "") +
+    '<span class="row-actions">' + statusPill(b) +
+    '<button class="btn sm' + (past && !b.show_status ? " primary" : "") + '" data-follow="' + b.id + '">' + (b.show_status || b.sale ? "Edit result" : "Mark show / sale") + "</button>" +
+    '<button class="btn sm quiet" data-open="' + esc(b.phone) + '">Open lead</button></span></div>';
+}
+
+export function followModal(id) {
+  const b = (S.data.bookings || []).concat(S.data.calls).find((x) => String(x.id) === String(id));
+  if (!b) return;
+  const when = parseUTC(b.booked_for);
+  let status = b.show_status || "", sale = !!b.sale;
+  openModal(
+    '<div class="dh"><div><h2>What happened on the booked call?</h2><p class="sub">' + esc(b.company || fmtPhone(b.phone)) +
+    (when ? " · " + leadDay(when, b.tz_offset) + " " + leadClock(when, b.tz_offset) + " their time" : "") +
+    ". It is credited to the day you dialed and booked it, " + esc((b.at || "").slice(0, 10)) + ".</p></div>" + closeX() + "</div>" +
+    '<div class="seg" id="ft-status">' + [["SHOWED", "Showed"], ["NO_SHOW", "No-show"], ["RESCHEDULED", "Rescheduled"], ["", "Not yet"]].map((x) =>
+      '<button data-v="' + x[0] + '" aria-selected="' + (status === x[0]) + '">' + x[1] + "</button>").join("") + "</div>" +
+    '<label class="check"><input type="checkbox" id="ft-sale"' + (sale ? " checked" : "") + "><span>It became a sale</span></label>" +
+    '<div id="ft-amount-row"' + (sale ? "" : " hidden") + '><label class="lbl" for="ft-amount">Sale amount, USD</label><input class="field num" id="ft-amount" type="number" min="0" step="1" value="' + (b.sale_amount || "") + '"></div>' +
+    '<p class="err" id="ft-err"></p><div class="acts"><button class="btn" data-close>Cancel</button><button class="btn primary" id="ft-save">Save</button></div>');
+  $("ft-status").addEventListener("click", (e) => {
+    const x = e.target.closest("[data-v]"); if (!x) return;
+    status = x.getAttribute("data-v");
+    $("ft-status").querySelectorAll("button").forEach((y) => y.setAttribute("aria-selected", y === x ? "true" : "false"));
+  });
+  $("ft-sale").addEventListener("change", function () {
+    sale = this.checked; $("ft-amount-row").hidden = !sale;
+    if (sale) { status = "SHOWED"; $("ft-status").querySelectorAll("button").forEach((y) => y.setAttribute("aria-selected", y.getAttribute("data-v") === "SHOWED" ? "true" : "false")); $("ft-amount").focus(); }
+  });
+  $("ft-save").addEventListener("click", () => {
+    api("/api/followthrough", { id: b.id, show_status: status, sale, sale_amount: Number($("ft-amount").value || 0), agent: S.agent }).then((d) => {
+      if (d.error) { $("ft-err").textContent = d.error; return; }
+      S.data.bookings = d.bookings || [];
+      actions.renderStats(d.stats);
+      closeModal(); refreshCalls(); emit("bookings");
+      toast("success", "Saved. The funnel is updated.");
+    });
+  });
 }
 
 /* ---------------------------------------------------------------- inbox -- */
@@ -190,7 +248,8 @@ export function wireRails() {
 
   $("rail").addEventListener("click", (e) => {
     let b;
-    if ((b = e.target.closest("[data-open]"))) actions.openLead(b.getAttribute("data-open"));
+    if ((b = e.target.closest("[data-follow]"))) followModal(b.getAttribute("data-follow"));
+    else if ((b = e.target.closest("[data-open]"))) actions.openLead(b.getAttribute("data-open"));
     else if ((b = e.target.closest("[data-callback]"))) actions.openLead(b.getAttribute("data-callback"), "/api/manual");
     else if ((b = e.target.closest("[data-resched]"))) rescheduleModal(b.getAttribute("data-resched"));
     else if ((b = e.target.closest("[data-uncb]"))) {

@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import funnel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -119,6 +120,27 @@ def clean_phone(raw):
     if len(digits) == 10:
         digits = "1" + digits
     return "+" + digits if re.fullmatch(r"1[2-9]\d{9}", digits) else ""
+
+
+def objection_labels():
+    return {o["key"]: o.get("label", o["key"]) for o in DIALER.get("objection_tags") or []}
+
+
+def local_to_utc(local_stamp, lead):
+    """'YYYY-MM-DDTHH:MM' on the prospect's wall clock -> UTC stamp, using the
+    lead's zone so a booking across the clock change still lands right."""
+    try:
+        naive = datetime.fromisoformat(str(local_stamp).replace(" ", "T")[:16])
+    except (TypeError, ValueError):
+        return None
+    name = (lead or {}).get("tz_name") or ""
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            return naive.replace(tzinfo=ZoneInfo(name)).astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+        except Exception:
+            pass
+    return (naive - timedelta(hours=db.lead_offset(lead or {"tz_name": "", "tz_offset": -5}))).isoformat(sep=" ")
 
 
 def clean_when(raw):
@@ -526,7 +548,29 @@ class Handler(BaseHTTPRequestHandler):
             })
 
         if route == "/api/stats":
-            return self._json(db.stats(self._agent()))
+            since = clean_when((query.get("since") or [""])[0]) if query.get("since") else None
+            return self._json(db.stats(self._agent(), (query.get("range") or ["today"])[0],
+                                       (query.get("script") or [""])[0][:24] or None, since,
+                                       objection_labels()))
+
+        if route == "/api/funnel.csv":
+            import csv as _csv
+            import io
+            buf = io.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow(funnel.SHEET_COLUMNS)
+            writer.writerows(db.funnel_sheet((query.get("range") or ["all"])[0], None, objection_labels()))
+            self.send_response(200)
+            payload = buf.getvalue().encode("utf-8")
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="imperium_tracker.csv"')
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        if route == "/api/bookings":
+            return self._json({"bookings": db.bookings()})
 
         if route == "/api/lookup":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -585,9 +629,24 @@ class Handler(BaseHTTPRequestHandler):
             when = clean_when(data.get("callback_at")) if data.get("callback_at") else None
             if code == "CALLBACK" and not when:
                 return self._json({"error": "callback needs a valid time"}, 400)
+            extra = {k: data.get(k) for k in ("objections", "offered", "pain", "script_version",
+                                              "number_used", "session_id", "dm_name", "email",
+                                              "mobile", "ppap_per_year", "oem", "gatekeeper_name")}
+            if not isinstance(extra["objections"], list):
+                extra["objections"] = []
+            if (db.OUTCOMES.get(code) or {}).get("booked"):
+                lead = db.lookup(phone)
+                email = str(data.get("email") or "").strip()
+                if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+                    return self._json({"error": "A booked call needs their email for the invite."}, 400)
+                extra["booked_for"] = local_to_utc(data.get("booked_for_local"), lead)
+                if not extra["booked_for"]:
+                    return self._json({"error": "A booked call needs a date and time."}, 400)
+                if extra["booked_for"] <= db.iso(db.now()):
+                    return self._json({"error": "The booked time is in the past."}, 400)
             dispo_id = db.disposition(phone, data.get("company", ""), code,
                                       (data.get("notes") or "")[:2000], self._agent(data),
-                                      int(data.get("duration") or 0), callback_at=when)
+                                      int(data.get("duration") or 0), callback_at=when, extra=extra)
             print(f"  {code:12s} {phone}  {data.get('company', '')}"
                   + (f"  [{(data.get('notes') or '')[:60]}]" if data.get("notes") else ""))
             return self._json({"ok": True, "id": dispo_id,
@@ -622,6 +681,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "lead not found"}, 404)
             return self._json({"ok": True, "callbacks": db.callbacks_list(),
                                "stats": db.stats(self._agent(data))})
+
+        if route == "/api/followthrough":
+            error = db.follow_through(int(data.get("id") or 0), data.get("show_status"),
+                                      data.get("sale"), data.get("sale_amount"))
+            if error:
+                return self._json({"error": error}, 400)
+            return self._json({"ok": True, "bookings": db.bookings(),
+                               "stats": db.stats(self._agent(data), labels=objection_labels())})
 
         if route == "/api/agent-event":
             event = re.sub(r"[^A-Z_]", "", str(data.get("event", "")).upper())
@@ -707,7 +774,7 @@ def main():
     VM_DROP_TEXT = os.environ.get("VM_DROP_TEXT", VM_DROP_TEXT)
     DIALER.clear()
     DIALER.update(load_dialer_config())
-    db.configure(DIALER["outcomes"])
+    db.configure(DIALER["outcomes"], DIALER.get("stats_timezone"), objection_labels())
     migrate()
 
     parser = argparse.ArgumentParser(description="Run the dialer.")

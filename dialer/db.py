@@ -13,6 +13,8 @@ import csv
 import json
 import os
 import sqlite3
+
+import funnel
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,15 +48,31 @@ CONNECTED = {"INTERESTED", "NOT_INT", "CALLBACK", "DNC", "GATEKEEPER", "WRONG_NU
 UNDO_WINDOW_SEC = 120
 
 
-def configure(outcomes):
+OUTCOMES = {}                      # key -> outcome definition from config.yaml
+STATS_TZ = "America/New_York"      # the day that stats, caps and same-day rules run on
+
+
+OBJECTION_LABELS = {}
+
+
+def configure(outcomes, stats_tz=None, objection_labels=None):
     """Let serve.py drive retry/connect semantics from config.yaml's
     dialer.outcomes so the UI and the queue can never disagree."""
-    global RETRYABLE, FINAL, CONNECTED
+    global RETRYABLE, FINAL, CONNECTED, OUTCOMES, STATS_TZ, OBJECTION_LABELS
+    OBJECTION_LABELS = objection_labels or OBJECTION_LABELS
+    if stats_tz:
+        STATS_TZ = stats_tz
     if not outcomes:
         return
+    OUTCOMES = {o["key"]: o for o in outcomes}
     RETRYABLE = {o["key"] for o in outcomes if o.get("kind") == "retry"}
     FINAL = {o["key"] for o in outcomes if o.get("kind") in ("final", "dnc")}
     CONNECTED = {o["key"] for o in outcomes if o.get("connect")}
+
+
+def day_start(at=None):
+    """UTC stamp where the current stats day began."""
+    return iso(funnel.range_start("today", at or now(), STATS_TZ))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
@@ -69,6 +87,7 @@ CREATE TABLE IF NOT EXISTS leads (
   li_status TEXT DEFAULT '', email TEXT DEFAULT '', mobile TEXT DEFAULT '',
   is_mobile INTEGER DEFAULT 0, source TEXT DEFAULT '',
   dm_name TEXT DEFAULT '', gatekeeper_name TEXT DEFAULT '', lead_notes TEXT DEFAULT '',
+  pain TEXT DEFAULT '', ppap_per_year TEXT DEFAULT '', tags TEXT DEFAULT '',
   list_id TEXT DEFAULT '', source_file TEXT DEFAULT '',
   status TEXT DEFAULT 'NEW',
   checked_out_by TEXT, checked_out_at TEXT,
@@ -82,7 +101,15 @@ CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status, rank);
 CREATE TABLE IF NOT EXISTS dispositions (
   id INTEGER PRIMARY KEY,
   phone TEXT, company TEXT, disposition TEXT, notes TEXT DEFAULT '',
-  agent TEXT DEFAULT '', duration INTEGER DEFAULT 0, at TEXT
+  agent TEXT DEFAULT '', duration INTEGER DEFAULT 0, at TEXT,
+  prev_state TEXT,
+  -- funnel flags, stamped at save time so later config edits never rewrite history
+  pickup INTEGER DEFAULT 0, dm INTEGER DEFAULT 0, pitched INTEGER DEFAULT 0,
+  resonated INTEGER DEFAULT 0, offered INTEGER DEFAULT 0, booked INTEGER DEFAULT 0,
+  objections TEXT, pain TEXT DEFAULT '', booked_for TEXT,
+  show_status TEXT, sale INTEGER DEFAULT 0, sale_amount REAL DEFAULT 0,
+  script_version TEXT DEFAULT '', number_used TEXT DEFAULT '',
+  talk_seconds INTEGER DEFAULT 0, attempt_no INTEGER DEFAULT 0, session_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_dispo_at ON dispositions(at);
 CREATE INDEX IF NOT EXISTS idx_dispo_phone ON dispositions(phone);
@@ -115,6 +142,27 @@ MIGRATIONS = [
     ("leads", "dm_name", "TEXT DEFAULT ''"),
     ("leads", "gatekeeper_name", "TEXT DEFAULT ''"),
     ("leads", "lead_notes", "TEXT DEFAULT ''"),
+    ("leads", "pain", "TEXT DEFAULT ''"),
+    ("leads", "ppap_per_year", "TEXT DEFAULT ''"),
+    ("leads", "tags", "TEXT DEFAULT ''"),
+    # Imperium funnel
+    ("dispositions", "pickup", "INTEGER DEFAULT 0"),
+    ("dispositions", "dm", "INTEGER DEFAULT 0"),
+    ("dispositions", "pitched", "INTEGER DEFAULT 0"),
+    ("dispositions", "resonated", "INTEGER DEFAULT 0"),
+    ("dispositions", "offered", "INTEGER DEFAULT 0"),
+    ("dispositions", "booked", "INTEGER DEFAULT 0"),
+    ("dispositions", "objections", "TEXT"),
+    ("dispositions", "pain", "TEXT DEFAULT ''"),
+    ("dispositions", "booked_for", "TEXT"),
+    ("dispositions", "show_status", "TEXT"),
+    ("dispositions", "sale", "INTEGER DEFAULT 0"),
+    ("dispositions", "sale_amount", "REAL DEFAULT 0"),
+    ("dispositions", "script_version", "TEXT DEFAULT ''"),
+    ("dispositions", "number_used", "TEXT DEFAULT ''"),
+    ("dispositions", "talk_seconds", "INTEGER DEFAULT 0"),
+    ("dispositions", "attempt_no", "INTEGER DEFAULT 0"),
+    ("dispositions", "session_id", "INTEGER"),
 ]
 
 
@@ -137,10 +185,18 @@ def init():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with connect() as con:
         con.executescript(SCHEMA)
+        added = set()
         for table, column, decl in MIGRATIONS:
             have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
             if column not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                added.add(column)
+        if "pickup" in added:            # first boot after the funnel landed: flag old history
+            for key, f in funnel.LEGACY_FLAGS.items():
+                con.execute(
+                    "UPDATE dispositions SET pickup=?, dm=?, pitched=?, resonated=?, talk_seconds=duration "
+                    "WHERE disposition=?",
+                    (f.get("pickup", 0), f.get("dm", 0), f.get("pitched", 0), f.get("resonated", 0), key))
 
 
 def lead_count(con=None):
@@ -277,7 +333,7 @@ def in_window(tz_offset, at=None, callback=False):
 
 
 def dials_today(con):
-    day = iso(now())[:10]
+    day = day_start()
     return con.execute(
         "SELECT COUNT(*) FROM dispositions WHERE at>=? AND disposition!='SKIP'",
         (day,)).fetchone()[0]
@@ -340,7 +396,8 @@ def checkout(agent):
 def history(phone, limit=20):
     with connect() as con:
         return [dict(r) for r in con.execute(
-            "SELECT id, disposition, notes, agent, duration, at FROM dispositions "
+            "SELECT id, disposition, notes, agent, duration, at, objections, pain, booked_for, "
+            "show_status, sale, attempt_no, script_version FROM dispositions "
             "WHERE phone=? ORDER BY at DESC, id DESC LIMIT ?", (phone, limit))]
 
 
@@ -413,19 +470,65 @@ def callbacks_list(limit=100):
 
 
 def calls_today(agent=None, limit=300):
-    day = iso(now())[:10]
     sql = ("""SELECT d.id, d.phone, d.company, d.disposition, d.notes, d.agent,
-                     d.duration, d.at, l.first, l.last, l.tz_offset, l.tz_name, l.status
+                     d.duration, d.at, d.objections, d.pain, d.booked, d.booked_for,
+                     d.show_status, d.sale, d.sale_amount, d.script_version,
+                     l.first, l.last, l.tz_offset, l.tz_name, l.status, l.email
               FROM dispositions d LEFT JOIN leads l ON l.phone = d.phone
               WHERE d.at >= ? AND d.disposition != 'SKIP'""")
-    args = [day]
+    args = [day_start()]
     if agent:
         sql += " AND d.agent = ?"
         args.append(agent)
     sql += " ORDER BY d.at DESC, d.id DESC LIMIT ?"
     args.append(limit)
     with connect() as con:
-        return [dict(r) for r in con.execute(sql, args)]
+        out = []
+        for r in con.execute(sql, args):
+            d = dict(r)
+            d["tz_offset"] = lead_offset(d)
+            out.append(d)
+        return out
+
+
+def bookings(limit=200):
+    """Every booked call, soonest upcoming first, then the past ones that
+    still need a show / no-show / sale marked."""
+    t = iso(now())
+    with connect() as con:
+        rows = con.execute(
+            """SELECT d.id, d.phone, d.company, d.at, d.booked_for, d.show_status, d.sale,
+                      d.sale_amount, d.pain, d.notes, d.script_version, d.agent,
+                      l.first, l.last, l.dm_name, l.email, l.tz_offset, l.tz_name, l.process
+               FROM dispositions d LEFT JOIN leads l ON l.phone = d.phone
+               WHERE d.booked = 1 ORDER BY d.booked_for DESC LIMIT ?""", (limit,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["tz_offset"] = lead_offset(d)
+        d["upcoming"] = bool(d["booked_for"] and d["booked_for"] > t)
+        d["needs_status"] = not d["upcoming"] and not d["show_status"]
+        out.append(d)
+    out.sort(key=lambda d: (0, d["booked_for"] or "") if d["upcoming"] else (1, "~" if d["needs_status"] else "", d["booked_for"] or ""))
+    return out
+
+
+def follow_through(dispo_id, show_status=None, sale=None, sale_amount=None):
+    """Mark what happened to a booked call. Stored on the dial that booked it,
+    which is what attributes the sales call and the sale to that dial's date."""
+    status = (show_status or "").upper() or None
+    if status not in (None, "SHOWED", "NO_SHOW", "RESCHEDULED"):
+        return "show_status must be SHOWED, NO_SHOW or RESCHEDULED"
+    with connect() as con:
+        row = con.execute("SELECT booked FROM dispositions WHERE id=?", (dispo_id,)).fetchone()
+        if row is None or not row["booked"]:
+            return "That call was not a booking."
+        sale_flag = 1 if sale else 0
+        if sale_flag:
+            status = "SHOWED"                       # a sale implies the call happened
+        con.execute("UPDATE dispositions SET show_status=?, sale=?, sale_amount=? WHERE id=?",
+                    (status, sale_flag, float(sale_amount or 0) if sale_flag else 0, dispo_id))
+    return None
 
 
 def _drop_untouched_manual(con, phone):
@@ -516,29 +619,43 @@ def _snapshot(lead):
     return {k: lead[k] for k in lead.keys() if k not in _NO_SNAP}
 
 
-def disposition(phone, company, dispo, notes, agent, duration, callback_at=None):
-    """Record an outcome and advance the lead. Returns the disposition id,
-    which /api/undo takes while the agent's undo toast is still up."""
+LEAD_CAPTURE = ("dm_name", "email", "mobile", "pain", "ppap_per_year", "oem", "gatekeeper_name")
+
+
+def disposition(phone, company, dispo, notes, agent, duration, callback_at=None, extra=None):
+    """Record an outcome and advance the lead. `extra` carries the level-2
+    wrap-up (objections, offered, pain, booked_for, script_version,
+    number_used, session_id) and captured lead fields. Returns the
+    disposition id, which /api/undo takes while the undo toast is still up."""
+    extra = extra or {}
     t = iso(now())
+    flags = funnel.flags_for(OUTCOMES.get(dispo), offered_ticked=bool(extra.get("offered")))
     with connect() as con:
         lead = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
         snap = _snapshot(lead) if lead else None
         if snap is not None:
             snap["had_dnc"] = con.execute(
                 "SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone() is not None
+        attempts = (lead["attempts"] if lead else 0) + 1
+        objections = [str(o)[:80] for o in (extra.get("objections") or [])][:12]
 
         cur = con.execute(
-            "INSERT INTO dispositions (phone, company, disposition, notes, agent, duration, at, prev_state) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            """INSERT INTO dispositions (phone, company, disposition, notes, agent, duration, at, prev_state,
+                 pickup, dm, pitched, resonated, offered, booked, objections, pain, booked_for,
+                 script_version, number_used, talk_seconds, attempt_no, session_id)
+               VALUES (?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?, ?,?,?,?,?)""",
             (phone, company, dispo, notes, agent, duration, t,
-             json.dumps(snap) if snap is not None else None))
+             json.dumps(snap) if snap is not None else None,
+             flags["pickup"], flags["dm"], flags["pitched"], flags["resonated"], flags["offered"], flags["booked"],
+             json.dumps(objections) if objections else None, (extra.get("pain") or "")[:500],
+             extra.get("booked_for"), (extra.get("script_version") or "")[:24],
+             (extra.get("number_used") or "")[:20], duration if flags["pickup"] else 0,
+             attempts, extra.get("session_id")))
         dispo_id = cur.lastrowid
 
         if dispo == "DNC":
             con.execute("INSERT OR REPLACE INTO dnc VALUES (?,?,?,?)",
                         (phone, notes or "agent_request", t, agent))
-
-        attempts = (lead["attempts"] if lead else 0) + 1
 
         if dispo == "CALLBACK" and callback_at:
             status, next_at, cb = "NEW", None, callback_at
@@ -553,6 +670,12 @@ def disposition(phone, company, dispo, notes, agent, duration, callback_at=None)
             """UPDATE leads SET status=?, attempts=?, last_disposition=?, last_called_at=?,
                next_attempt_at=?, callback_at=?, checked_out_by=NULL WHERE phone=?""",
             (status, attempts, dispo, t, next_at, cb, phone))
+
+        # What the caller learned on the call sticks to the lead.
+        learned = {k: str(extra[k]).strip()[:500] for k in LEAD_CAPTURE if str(extra.get(k) or "").strip()}
+        if learned and lead is not None:
+            con.execute(f"UPDATE leads SET {', '.join(k + '=?' for k in learned)} WHERE phone=?",
+                        list(learned.values()) + [phone])
         return dispo_id
 
 
@@ -611,22 +734,34 @@ def lookup(phone):
     return dict(row) if row else None
 
 
-def stats(agent=None):
-    t = now()
-    day = iso(t)[:10]
+_FUNNEL_COLS = ("phone, disposition, at, agent, duration, pickup, dm, pitched, resonated, offered, "
+                "booked, objections, booked_for, show_status, sale, sale_amount, script_version, "
+                "number_used, talk_seconds, session_id")
+
+
+def funnel_rows(start=None, agent=None, script=None, since=None):
+    sql, args = f"SELECT {_FUNNEL_COLS} FROM dispositions WHERE disposition != 'SKIP'", []
+    for clause, value in (("at >= ?", start), ("agent = ?", agent), ("script_version = ?", script), ("at >= ?", since)):
+        if value:
+            sql += " AND " + clause
+            args.append(value)
     with connect() as con:
-        dials = dials_today(con)
+        return [dict(r) for r in con.execute(sql + " ORDER BY at", args)]
+
+
+def stats(agent=None, range_kind="today", script=None, since=None, labels=None):
+    """Queue health plus the Imperium funnel for the asked range."""
+    t = now()
+    if range_kind not in ("today", "week", "all"):
+        range_kind = "today"
+    start = funnel.range_start(range_kind, t, STATS_TZ)
+    rows = funnel_rows(iso(start) if start else None, agent, script)
+    today_rows = rows if range_kind == "today" and not script else funnel_rows(day_start(t), agent)
+    with connect() as con:
         row = lambda q, *a: con.execute(q, a).fetchone()[0]
-        marks = ",".join("?" * len(CONNECTED)) or "''"
-        connected = sorted(CONNECTED)
         out = {
-            "dials_today": dials,
+            "dials_today": dials_today(con),
             "cap": DAILY_CAP,
-            "connects_today": row(
-                f"SELECT COUNT(*) FROM dispositions WHERE at>=? AND disposition IN ({marks})",
-                day, *connected),
-            "interested_today": row(
-                "SELECT COUNT(*) FROM dispositions WHERE at>=? AND disposition='INTERESTED'", day),
             "callbacks_due": row(
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND callback_at IS NOT NULL "
                 "AND callback_at <= ?", iso(t + timedelta(hours=24))),
@@ -639,22 +774,26 @@ def stats(agent=None):
                 iso(t), MAX_ATTEMPTS),
             "retry_pool": row(
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND next_attempt_at > ?", iso(t)),
+            "bookings_open": row(
+                "SELECT COUNT(*) FROM dispositions WHERE booked=1 AND show_status IS NULL AND booked_for <= ?", iso(t)),
         }
-        # Per-agent productivity. The cap above is per caller ID, so it stays
-        # floor-wide; everything below is "how is *my* day going".
-        who, args = ("AND agent=?", [agent]) if agent else ("", [])
-        mine = con.execute(
-            f"SELECT disposition, COUNT(*) n, COALESCE(SUM(duration),0) secs, MIN(at) first_at "
-            f"FROM dispositions WHERE at>=? AND disposition!='SKIP' {who} GROUP BY disposition",
-            [day] + args).fetchall()
-        out["outcomes"] = {r["disposition"]: r["n"] for r in mine}
-        out["my_dials"] = sum(r["n"] for r in mine)
-        out["my_connects"] = sum(r["n"] for r in mine if r["disposition"] in CONNECTED)
-        out["talk_seconds"] = sum(r["secs"] for r in mine if r["disposition"] in CONNECTED)
-        firsts = [r["first_at"] for r in mine if r["first_at"]]
-        out["first_dial_at"] = min(firsts) if firsts else None
-        out["server_now"] = iso(t)
-        return out
+    out.update({
+        "range": range_kind, "script": script or "",
+        "funnel": funnel.summarise(rows, t),
+        "by_script": funnel.by_script(rows, t),
+        "today": funnel.summarise(today_rows, t),
+        "objections": funnel.top_objections(today_rows, labels or OBJECTION_LABELS),
+        "server_now": iso(t),
+    })
+    if since:
+        out["session"] = funnel.summarise(funnel_rows(agent=agent, since=since), t)
+    return out
+
+
+def funnel_sheet(range_kind="all", agent=None, labels=None):
+    start = funnel.range_start(range_kind, now(), STATS_TZ)
+    return funnel.daily_sheet(funnel_rows(iso(start) if start else None, agent), STATS_TZ,
+                              labels or OBJECTION_LABELS, now())
 
 
 # --------------------------------------------------------------- exports --

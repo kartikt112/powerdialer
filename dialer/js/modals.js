@@ -79,7 +79,7 @@ export const SHORTCUTS = [
   ["Start, pause or resume the session", "p"], ["Dial, or hang up", "space"], ["Hold the auto-dial", "esc"], ["Skip lead", "s"],
   ["Mute", "m"], ["Keypad", "k"], ["Drop voicemail", "v"], ["Touch-tones on a live call", "0-9 * #"],
   ["Jump to notes", "n"], ["Pick an outcome in wrap-up", "1-9 0"], ["Accept the suggested outcome", "enter"], ["Undo last outcome", "z"],
-  ["Search leads", "/"], ["Dial a number", "d"], ["Copy the number", "c"], ["Objections", "o"]
+  ["Full stats and CSV", "t"], ["Search leads", "/"], ["Dial a number", "d"], ["Copy the number", "c"], ["Objections", "o"]
 ];
 export function shortcutsModal() {
   openModal('<div class="dh"><h2>Keyboard shortcuts</h2>' + closeX() + '</div><div class="keys-table">' +

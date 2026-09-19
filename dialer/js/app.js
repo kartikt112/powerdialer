@@ -5,13 +5,14 @@
  * owns the agent's flow.  IDLE -> READY -> DIALING -> LIVE -> WRAP -> next.
  * With no carrier credentials on the server, calls are simulated.
  */
-import { $, icon, esc, fmtPhone, fmtClock, fmtHMS, fmtTalk, parseUTC, leadClock, localHour, localWeekday, keysHTML, store } from "./util.js";
+import { $, icon, esc, fmtPhone, fmtClock, fmtHMS, toServer, leadClock, localHour, localWeekday, keysHTML, store } from "./util.js";
 import { S, on, emit, actions, outcome, busy } from "./state.js";
 import { api, withAgent } from "./api.js";
 import { toast, say, banner, modal, closeModal, closeMenus, menuOpen, toggleMenu, copyText } from "./ui.js";
 import { simulatorCarrier, twilioCarrier } from "./carrier.js";
 import { renderScript, renderTimeline, setScriptTab, wireScript } from "./script.js";
-import { renderOutcomes, setSuggested, resetWrap, wrapKey, getWrapMode, backToOutcomes, undo, wireWrap, draftKey, submitOutcome } from "./wrap.js";
+import { renderOutcomes, setSuggested, resetWrap, wrapKey, getWrapMode, backToOutcomes, undo, wireWrap, draftKey, submitOutcome, freshCall } from "./wrap.js";
+import { refreshStats, statsSheet, wireFunnel } from "./funnel.js";
 import { selectTab, refreshQueue, refreshCallbacks, refreshCalls, refreshInbox, wireRails } from "./rails.js";
 import { agentPicker, manualModal, shortcutsModal, logModal, settingsModal, applyTheme, pickList, uploadList } from "./modals.js";
 
@@ -25,26 +26,14 @@ const cd = { left: 0, timer: null };
 function renderStats(s) {
   if (!s) return;
   S.stats = s;
-  const mine = s.my_dials == null ? s.dials_today : s.my_dials;
-  const conn = s.my_connects == null ? s.connects_today : s.my_connects;
   $("k-dials").innerHTML = s.dials_today + "<small>/ " + s.cap + "</small>";
   $("k-dials").className = s.dials_today >= s.cap ? "over" : "";
   $("k-dials").title = "Dials on this caller ID today. Cap " + s.cap + ".";
-  $("k-goal").style.width = Math.min(100, mine / (S.cfg.daily_goal || 100) * 100) + "%";
-  $("k-conn").innerHTML = conn + "<small>" + (mine ? Math.round(conn / mine * 100) + "%" : "-") + "</small>";
-  $("k-int").textContent = (s.outcomes && s.outcomes.INTERESTED) || s.interested_today || 0;
-  $("k-talk").textContent = fmtTalk(s.talk_seconds);
-  let pace = "-";
-  if (s.first_dial_at && s.server_now) {
-    const hrs = (parseUTC(s.server_now) - parseUTC(s.first_dial_at)) / 3600000;
-    if (hrs >= 0.1) pace = Math.round(mine / hrs);
-  }
-  $("k-pace").innerHTML = pace + "<small>/hr</small>";
   const late = s.callbacks_overdue || 0;
   $("k-cb").innerHTML = (late || s.callbacks_due) + "<small>" + (late ? "overdue" : "due") + "</small>";
   $("k-cb").className = late ? "alert" : "";
   $("n-queue").textContent = s.queue == null ? "" : s.queue;
-  $("n-calls").textContent = mine || "";
+  $("n-calls").textContent = (s.today && s.today.dials) || "";
   if (s.dials_today >= s.cap) {
     banner("danger", "<b>Daily cap reached on this number.</b> The queue is closed until tomorrow. " +
            "Pushing past " + s.cap + " dials a day is how numbers get labelled as spam.");
@@ -213,6 +202,7 @@ function startSession() {
   const ss = S.session;
   if (ss.on) return;
   ss.on = true; ss.paused = null; ss.pausePending = null; ss.activeSec = 0;
+  ss.startedAt = toServer(new Date());
   agentEvent("SESSION_START");
   say("Session started: leads dial themselves after wrap-up");
   toast("info", "<b>Session on.</b> Each lead dials itself " + autodialDelay() + "s after it loads. <kbd>esc</kbd> holds one.");
@@ -305,7 +295,7 @@ function loadLead(lead, opts) {
   opts = opts || {};
   clearTimeout(idleTimer);
   S.cur = lead; S.picked = !!opts.handPicked; S.inbound = !!opts.inbound;
-  S.callSec = 0; S.ringSec = 0; S.call = {};
+  S.callSec = 0; S.ringSec = 0; S.call = freshCall(lead);
   setSuggested("");
   $("notes").value = opts.notes != null ? opts.notes : store.get(draftKey(lead.phone), "");
   $("notes-saved").textContent = opts.notes == null && $("notes").value ? "Draft restored" : "";
@@ -472,7 +462,7 @@ function vmDrop() {
   if (!carrier.real || !activeCall) {                      // simulator
     say("Dropped voicemail (simulated)");
     const c = activeCall; activeCall = null; if (c) c.hangup();
-    submitOutcome("VOICEMAIL", null);
+    submitOutcome("VOICEMAIL");
     return;
   }
   if (!sid) { toast("warn", "No call id yet. Try again in a second."); return; }
@@ -481,7 +471,7 @@ function vmDrop() {
     if (d.ok || d.sim) {
       say("Dropped voicemail message");
       const c = activeCall; activeCall = null; if (c) c.hangup();
-      submitOutcome("VOICEMAIL", null);             // message is playing; move on
+      submitOutcome("VOICEMAIL");                   // message is playing; move on
     } else {
       $("b-vmdrop").disabled = false;
       toast("error", "Voicemail drop failed: " + esc(d.error || "unknown"));
@@ -603,6 +593,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "c" && S.cur) copyNumber();
   else if (k === "o" && S.cur) setScriptTab("objections");
   else if (k === "z") undo();
+  else if (k === "t") statsSheet();
   else if (k === "?") shortcutsModal();
   else if (k === "p") {
     if (!S.session.on) startSession(); else if (S.session.paused) resume(); else toggleMenu("pause-menu", "b-pause");
@@ -673,6 +664,9 @@ function wire() {
     else if (act === "settings") settingsModal();
   });
   document.addEventListener("click", (e) => {
+    // A mouse click leaves focus on the button, and then Space would press it
+    // again instead of dialing. Keyboard focus (Tab) is left alone.
+    if (e.detail > 0 && !modal.open) { const b = e.target.closest("button, summary"); if (b) b.blur(); }
     if (!e.target.closest(".menu-wrap")) closeMenus();
     if (!$("keypad").hidden && !e.target.closest("#keypad, #b-keypad")) toggleKeypad(false);
   });
@@ -704,7 +698,7 @@ function wire() {
   });
   matchMedia("(prefers-color-scheme: light)").addEventListener("change", applyTheme);
 
-  wireScript(); wireWrap(); wireRails();
+  wireScript(); wireWrap(); wireRails(); wireFunnel();
 }
 
 Object.assign(actions, {
@@ -742,7 +736,7 @@ function boot() {
     refreshCallbacks(); refreshCalls(); refreshInbox();
     setInterval(() => {
       if (document.hidden) return;
-      api(withAgent("/api/stats")).then(renderStats).catch(() => {});
+      refreshStats();
       refreshCallbacks();
     }, 60000);
     setInterval(() => { if (!document.hidden) refreshInbox(); }, 300000);

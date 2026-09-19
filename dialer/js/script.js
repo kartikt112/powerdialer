@@ -52,6 +52,14 @@ export function renderScript() {
   box.innerHTML = html;
 }
 
+function tagsOf(e) {
+  let list = [];
+  try { list = JSON.parse(e.objections || "[]"); } catch (x) {}
+  const labels = {};
+  (S.cfg.objection_tags || []).forEach((t) => { labels[t.key] = t.label; });
+  return list.map((k) => { const p = String(k).split(":"); return p[0] === "OTHER" && p[1] ? p.slice(1).join(":") : (labels[p[0]] || p[0]); }).join(", ");
+}
+
 export function renderTimeline() {
   const cur = S.cur, h = (cur && cur.history) || [];
   $("h-count").textContent = h.length ? h.length + (h.length === 1 ? " call" : " calls") : "";
@@ -61,6 +69,8 @@ export function renderTimeline() {
     return '<div class="ev"><i class="node ' + esc(o.tone) + '"></i><div>' +
       '<div class="l1">' + esc(o.label) + "<span>" + (at ? leadDay(at, cur.tz_offset) + " · " + myClock(at) : "") +
       (e.duration ? " · " + fmtClock(e.duration) : "") + (e.agent ? " · " + esc(e.agent) : "") + "</span></div>" +
+      (e.pain ? '<div class="l2"><b>Pain:</b> ' + esc(e.pain) + "</div>" : "") +
+      (tagsOf(e) ? '<div class="l2"><b>Objections:</b> ' + esc(tagsOf(e)) + "</div>" : "") +
       (e.notes ? '<div class="l2">' + esc(e.notes) + "</div>" : "") + "</div></div>";
   }).join("") || '<p class="muted">First time anyone has called this lead.</p>';
 }

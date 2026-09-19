@@ -118,24 +118,62 @@ dialer:
 
   pause_reasons: [Break, Lunch, Meeting, Admin / follow-ups, Coaching]
 
-  # kind:    final    -> lead is done
-  #          retry    -> back in the queue after retry.min_hours_between, up to retry.max_attempts
-  #          callback -> asks for a time, jumps the queue when due
-  #          dnc      -> confirms, then blocks the number for good
-  # connect: a human picked up (feeds connect rate + talk time)
-  # tone:    good | info | plain | danger  (button styling only)
-  # INTERESTED, CALLBACK and DNC must exist; keys 1-9 then 0 follow this order.
+  # The day that stats, caps and "same day" rules run on. You dial US business
+  # hours from India, which crosses midnight in both IST and UTC, so the day
+  # is the prospects' day.
+  stats_timezone: America/New_York
+
+  # ---- wrap-up level 1: what happened (keys 1-9 then 0, in this order) -------
+  # kind:     final    -> lead is done
+  #           retry    -> back in the queue on the retry cadence
+  #           callback -> asks for a time, jumps the queue when due
+  #           dnc      -> confirms, then blocks the number for good
+  # Funnel flags, stamped onto the call when it is saved:
+  #   connect   someone picked up            (Pickups)
+  #   dm        the decision maker was on the line
+  #   pitched   the DM heard the pull pitch  (DM's Pitched)
+  #   resonated they admitted the problem    (Resonations)
+  #   offered   you asked for the meeting    (can also be ticked at level 2)
+  #   booked    a call is on the calendar    (Call Booked)
+  # tone: good | info | plain | danger  (button styling only)
+  # CALLBACK, DNC and BOOKED are load-bearing keys.
   outcomes:
-    - {key: INTERESTED,   label: Interested,     kind: final,    connect: true,  tone: good}
-    - {key: CALLBACK,     label: Callback,       kind: callback, connect: true,  tone: info}
-    - {key: NOT_INT,      label: Not interested, kind: final,    connect: true,  tone: plain}
-    - {key: GATEKEEPER,   label: Gatekeeper,     kind: retry,    connect: true,  tone: plain}
-    - {key: VOICEMAIL,    label: Voicemail,      kind: retry,    connect: false, tone: plain}
-    - {key: NO_ANSWER,    label: No answer,      kind: retry,    connect: false, tone: plain}
-    - {key: BUSY,         label: Busy,           kind: retry,    connect: false, tone: plain}
-    - {key: WRONG_NUMBER, label: Wrong number,   kind: final,    connect: true,  tone: plain}
-    - {key: DISCONNECTED, label: Disconnected,   kind: final,    connect: false, tone: plain}
-    - {key: DNC,          label: Do not call,    kind: dnc,      connect: true,  tone: danger}
+    - {key: BOOKED,       label: Booked call,                 kind: final,    connect: true,  dm: true, pitched: true, resonated: true, offered: true, booked: true, tone: good}
+    - {key: CALLBACK,     label: Callback (DM),               kind: callback, connect: true,  dm: true, pitched: true, tone: info}
+    - {key: RESONATED_NO, label: "Resonated, no book",        kind: retry,    connect: true,  dm: true, pitched: true, resonated: true, offered: true, tone: info}
+    - {key: PITCHED_NO,   label: "Pitched, not a fit",        kind: final,    connect: true,  dm: true, pitched: true, tone: plain}
+    - {key: DM_NO_PITCH,  label: "DM reached, no pitch",      kind: retry,    connect: true,  dm: true, tone: plain}
+    - {key: GATEKEEPER,   label: Gatekeeper blocked,          kind: retry,    connect: true,  tone: plain}
+    - {key: VOICEMAIL,    label: Voicemail left,              kind: retry,    connect: false, tone: plain}
+    - {key: NO_ANSWER,    label: No answer / busy,            kind: retry,    connect: false, tone: plain}
+    - {key: BAD_NUMBER,   label: Wrong number / disconnected, kind: final,    connect: false, tone: plain}
+    - {key: DNC,          label: Do not call,                 kind: dnc,      connect: true,  tone: danger}
+
+  # ---- wrap-up level 2: only when someone picked up, all optional -------------
+  objection_tags:
+    - {key: NOT_INTERESTED,  label: Not interested}
+    - {key: BUSY,            label: Busy}
+    - {key: SEND_EMAIL,      label: Send me an email}
+    - {key: NO_BUDGET,       label: No budget}
+    - {key: FREE_TRIAL_ASK,  label: Free trial ask}
+    - {key: ALREADY_HAVE,    label: Already have someone}
+    - {key: WHAT_DO_YOU_DO,  label: What do you do}
+    - {key: ITAR,            label: ITAR}
+    - {key: NO_PPAP_VOLUME,  label: No PPAP volume}
+    - {key: OTHER,           label: Other}
+
+  # Rate targets shown next to each rate. good = at or above target,
+  # warn = within 75% of it, bad = below. Rates stay grey under min_sample.
+  targets:
+    abr: 0.02                  # bookings / dials: the star metric
+    abr_benchmark: 0.045       # what the team benchmark runs at
+    pickup: 0.20               # pickups / dials; under this on 50+ dials = number likely spam-labelled
+    dm_reach: 0.50             # DMs pitched / pickups
+    offer: 0.33                # offered / resonations
+    sur: 0.60                  # showed / booked calls that have come due
+    scr: 0.25                  # sales / showed
+    conversations_per_day: 10  # beginner star metric: unique effective conversations
+    min_sample: 10
 
   # Tokens: {first} {last} {dm_first} {company} {title} {process} {oem}
   #         {agent} {city} {state} {email} {pain} {callback_number}
