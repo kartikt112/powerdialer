@@ -504,6 +504,55 @@ button.row:hover:not(:disabled) { background: var(--hover); }
 .script b { font-weight: 650; }
 .script .tok { color: var(--accent); font-weight: 550; }
 .script .tip { margin-top: 12px; font-size: 12.5px; color: var(--text-3); line-height: 1.5; }
+/* call tree */
+.crumbs { display: flex; flex-wrap: wrap; gap: 4px; margin: 12px 0 2px; }
+.crumb { height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid var(--line); background: none;
+         color: var(--text-3); font-size: 11.5px; font-weight: 500; }
+.crumb:hover { color: var(--text); border-color: var(--text-3); }
+.crumb.done { color: var(--text-2); }
+.crumb.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.step { margin-top: 12px; }
+.step-h h3 { font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--accent); margin-bottom: 8px; }
+.step .say { font-size: 17px; line-height: 1.6; font-weight: 450; color: var(--text); }
+.step .say.alt { font-size: 14.5px; color: var(--text-2); margin-top: 10px; padding-left: 12px; border-left: 2px solid var(--line-strong); }
+.step .say .tok, .step .cue .tok, .upnext .tok { color: var(--accent); font-weight: 550; }
+.step .cue { margin-top: 12px; font-size: 13px; line-height: 1.55; color: var(--text-3); font-style: italic; }
+.step .must { display: flex; gap: 9px; align-items: flex-start; font-size: 13.5px; line-height: 1.5; font-weight: 550;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); border-radius: var(--r-md); padding: 9px 11px; margin-bottom: 12px; }
+.cid-line { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); margin-bottom: 10px; }
+.cid-line b { font-family: var(--mono); color: var(--text); }
+.capture { margin-top: 14px; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--raised); }
+.capture .tip { font-size: 12.5px; line-height: 1.5; color: var(--text-3); margin-top: 10px; }
+.contracts { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.contracts .check { align-items: flex-start; font-size: 13.5px; line-height: 1.45; }
+.contracts .check input { margin-top: 2px; flex: none; }
+.prompts { margin-top: 14px; }
+.prompt { font-size: 14px; line-height: 1.5; color: var(--text-2); padding: 6px 0; border-bottom: 1px solid var(--line); }
+.prompt:last-child { border-bottom: none; }
+.qa { margin-top: 14px; }
+.branches { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.branches .btn { height: auto; min-height: 30px; padding: 5px 10px; white-space: normal; text-align: left; line-height: 1.3; }
+.rules { margin: 14px 0 0; padding: 0 0 0 16px; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
+.step-next { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
+.upnext { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 9px 11px; border-radius: var(--r-md);
+          border: 1px dashed var(--line-strong); background: none; color: var(--text-3); font-size: 12.5px; line-height: 1.45; }
+.upnext > span:last-child { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.upnext:hover { border-style: solid; color: var(--text-2); }
+.step-nav { display: flex; justify-content: space-between; margin-top: 12px; }
+.objrule { font-size: 12.5px; line-height: 1.55; color: var(--text-2); padding: 9px 11px; margin-bottom: 10px;
+           border-left: 2px solid var(--warn); background: color-mix(in srgb, var(--warn) 7%, transparent); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.three { list-style: none; margin: 0; padding: 0 12px 6px; display: flex; flex-direction: column; gap: 9px; }
+.three li { font-size: 14px; line-height: 1.55; color: var(--text); }
+.three li .eyebrow { display: block; margin-bottom: 3px; }
+.obj-acts { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 10px 10px; }
+.obj.open-edit { border: 1px solid var(--accent); border-radius: var(--r-md); margin-bottom: 6px; background: var(--raised); }
+.obj-t { padding: 10px 12px 0; font-size: 13.5px; font-weight: 600; }
+.objform { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+.objform .lbl { margin: 6px 0 3px; }
+.objform .acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.objform .err { color: var(--danger); font-size: 12px; margin: 0; }
+
 details.obj { border: 1px solid var(--line); border-radius: var(--r-md); margin-bottom: 6px; background: var(--raised); }
 details.obj summary { list-style: none; cursor: pointer; padding: 10px 12px; font-size: 13.5px; font-weight: 550;
                       display: flex; align-items: center; gap: 8px; }

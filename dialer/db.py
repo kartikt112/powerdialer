@@ -142,6 +142,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS number_state (
   number TEXT PRIMARY KEY, parked INTEGER DEFAULT 0, reason TEXT DEFAULT '', at TEXT
 );
+CREATE TABLE IF NOT EXISTS webhook_log (
+  id INTEGER PRIMARY KEY, at TEXT, url TEXT, body TEXT, status INTEGER, reply TEXT
+);
 CREATE TABLE IF NOT EXISTS agent_events (
   id INTEGER PRIMARY KEY,
   agent TEXT, event TEXT, reason TEXT DEFAULT '', at TEXT
@@ -998,6 +1001,12 @@ def session_end(session_id, active_seconds):
     rows = funnel_rows(session_id=session_id)
     return {"session": dict(row) if row else None, "funnel": funnel.summarise(rows, now()),
             "objections": funnel.top_objections(rows, OBJECTION_LABELS, limit=3)}
+
+
+def log_webhook(url, body, status, reply):
+    with connect() as con:
+        con.execute("INSERT INTO webhook_log (at, url, body, status, reply) VALUES (?,?,?,?,?)",
+                    (iso(now()), url, body, status, reply))
 
 
 def agent_event(agent, event, reason=""):

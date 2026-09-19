@@ -210,15 +210,36 @@
       </main>
 
       <aside class="right" aria-label="Script and history">
-        <section>
-          <div class="sect-h"><span class="eyebrow">Script</span></div>
-          <div class="seg" role="tablist" id="script-tabs">
-            <button role="tab" data-s="opener" aria-selected="true">Opener</button>
-            <button role="tab" data-s="voicemail" aria-selected="false">Voicemail</button>
-            <button role="tab" data-s="gatekeeper" aria-selected="false">Gatekeeper</button>
-            <button role="tab" data-s="objections" aria-selected="false">Objections</button>
+        <section id="script-sec">
+          <div class="sect-h">
+            <span class="eyebrow">Script <span id="script-ver" style="text-transform:none;letter-spacing:0"></span></span>
+            <button class="btn sm" id="b-obj" title="Objections (o)"><span data-ic="shield" data-cls="sm"></span>Objections<kbd>o</kbd></button>
           </div>
-          <div class="script" id="script"></div>
+
+          <div id="treebox">
+            <div class="seg" role="tablist" id="flow-tabs">
+              <button role="tab" data-f="call" aria-selected="true">Call</button>
+              <button role="tab" data-f="voicemail" aria-selected="false">Voicemail</button>
+              <button role="tab" data-f="inbound" aria-selected="false">They called back</button>
+            </div>
+            <div class="crumbs" id="crumbs"></div>
+            <div class="step" id="step"></div>
+            <div class="step-next" id="step-next"></div>
+            <div class="step-nav" id="step-nav">
+              <button class="btn sm" id="b-prev"><span data-ic="arrowl" data-cls="sm"></span>Back<kbd>&larr;</kbd></button>
+              <button class="btn sm" id="b-next">Next<kbd>&rarr;</kbd><span data-ic="arrowr" data-cls="sm"></span></button>
+            </div>
+          </div>
+
+          <div class="objpanel" id="objpanel" hidden>
+            <div class="panel-head" style="padding:0 0 10px;border:none">
+              <label class="search"><span class="sr">Search objections</span><span data-ic="search"></span>
+                <input class="field" id="obj-q" type="search" placeholder="What did they just say?" autocomplete="off"></label>
+              <button class="btn icon" id="obj-close" aria-label="Back to the script" title="Back to the script (esc)"><span data-ic="x"></span></button>
+            </div>
+            <p class="objrule" id="obj-rule"></p>
+            <div id="obj-list"></div>
+          </div>
         </section>
         <section>
           <div class="sect-h"><span class="eyebrow">History</span><span class="muted" id="h-count"></span></div>

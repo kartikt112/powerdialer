@@ -210,39 +210,241 @@ dialer:
     conversations_per_day: 10  # beginner star metric: unique effective conversations
     min_sample: 10
 
-  # Tokens: {first} {last} {dm_first} {company} {title} {process} {oem}
-  #         {agent} {city} {state} {email} {pain} {callback_number}
+  # Fired when a BOOKED call is saved, so something outside the app (Zapier,
+  # Make, n8n) can create the Calendly or Google invite. POST, JSON body with
+  # the lead, the time in UTC and on their clock, the pain line and the caller.
+  # Every attempt is logged in the webhook_log table. null = off.
+  booking_webhook_url: null
+  calendly_url: "https://calendly.com/pxlkraftt/discovery-call"
+
+  # ---------------------------------------------------------------------------
+  # SCRIPTS. Every word the cockpit shows lives here.
+  # Tokens: {first} {last} {dm_first} {company} {title} {process} {oem} {agent}
+  #         {city} {state} {email} {pain} {callback_number} {calendly}
   #   {?oem}...{/oem}   renders only when the lead has that value
   #   {!oem}...{/oem}   renders only when it does not
-  #   **bold** is supported. compliance.recording_disclosure is shown above
-  #   the opener only while recording is true: it is not part of these strings.
+  #   **bold** is supported. No em dashes anywhere: they read as AI.
+  #
+  # tree.<version>.order   the step ids of each flow, in order. Arrow keys walk
+  #                        a flow; steps whose `when` / `unless` token test or
+  #                        `attempts` list fails for this lead are skipped.
+  # step keys:  title, say (first line is the main one, the rest are
+  #             alternatives), cue (stage direction), chips (tap to reveal an
+  #             answer), prompts (questions to pick from), rules (grey
+  #             reminders), branches ([{label, to, outcome}]), action (book).
+  # A version may `extends:` another and override single steps, which is how
+  # you A/B one change at a time: sessions pick a version, stats split by it.
+  # ---------------------------------------------------------------------------
   scripts:
-    opener: >-
-      Hi {dm_first}, I'll be totally honest with you, this is a sales call.
-      Would you like to hang up, or let me have thirty seconds and then decide?
-      OK so look, I'm typically invited in by owners of {?process}{process}
-      {/process}shops that are doing fine on parts but honest enough to admit
-      the PPAP and FAI paperwork is a bottleneck{?oem}, especially for
-      {oem}{/oem}. I get the feeling you're going to tell me none of that
-      applies at **{company}**?
-    voicemail: >-
-      Hey {dm_first}, it's {agent}, you can get me back on this number.
-      Pretty urgent about the...
-    gatekeeper: >-
-      Hey, I'm calling about the PPAP paperwork on your {?process}{process}
-      {/process}parts, got a couple of questions. Who would I need to speak with?
+    tree:
+      v1:
+        order:
+          call: [gatekeeper_known, gatekeeper_unknown, permission, pitch, negative, qualify, ask, book]
+          voicemail: [voicemail_cutoff, voicemail_plain]
+          inbound: [inbound]
+        steps:
+          gatekeeper_known:
+            title: Gatekeeper
+            when: dm_name
+            say:
+              - "Hi, is {dm_first} in?"
+              - "{dm_first} please."
+              - "Hey, it's {agent}, calling back for {dm_first}, is he around?"
+            cue: "Then silence. Assumptive close: \"Great, I'll hold, thanks.\""
+            chips: &gatekeeper_chips
+              - {q: "Who's calling?", a: "It's {agent}."}
+              - {q: "What's it regarding?", a: "He'll know what it's about.   /   An email I sent.   /   Personal business."}
+              - {q: "Will he know what it's about?", a: "He'd better."}
+              - {q: "Where are you calling from?", a: "PXL Kraft, he'll be familiar with us."}
+              - {q: "Third question from them", a: "Yeah I'm happy to discuss all that, I need to get to another call in a minute, what's the best way to reach {dm_first} later?"}
+            rules: &gatekeeper_rules
+              - Never pitch the gatekeeper.
+              - First names only.
+              - Short statement, then silence.
+              - No upward inflection.
+              - Answer two questions at most, then ask for the best way to reach {dm_first} later.
+          gatekeeper_unknown:
+            title: Gatekeeper
+            unless: dm_name
+            say:
+              - "Hey, I'm calling about the PPAP paperwork on your {?process}{process} {/process}parts, got a couple of questions. Who would I need to speak with?"
+            cue: "If they offer themselves: \"Are you the owner at {company}?\"  If not: \"Better I speak with the owner, what's their name?\"  Put the name in the Decision maker field."
+            chips: *gatekeeper_chips
+            rules: *gatekeeper_rules
+          permission:
+            title: Permission
+            say:
+              - "Hi {dm_first}, I'll be totally honest with you, this is a sales call. Would you like to hang up, or let me have thirty seconds and then decide?"
+            cue: "(laugh)  \"Let me have thirty seconds and if you don't want to talk to me at the end we end it there. Sound fair?\""
+          pitch:
+            title: Pull pitch, 30 seconds
+            say:
+              - "OK so look {dm_first}, I'm typically invited in by owners of {?process}{process} {/process}shops that are doing fine on parts but honest enough to admit the PPAP and FAI paperwork is a bottleneck. Usually it's one of three things. The quality guy loses two or three days per package ballooning the print and building the control plan, so the package lands a week late. Or the OEM keeps kicking it back on element 9 or the PSW and nobody's sure why. Or there's just no one to do it, so the owner does it at night. I get the feeling you're going to tell me none of that applies at {company}?"
+            branches:
+              - {label: "\"We're all set\" / \"not interested\"", to: negative}
+              - {label: "They lean in", to: qualify}
+          negative:
+            title: Branch, negative
+            say:
+              - "Sure, quick question, when someone says that it usually means the PPAPs go out on time every time. I'm assuming you never have one land late?"
+              - "Usually late packages come from one of those three, the hours, the rejections, or no one to do it. Which is it for you?"
+            cue: "First line always. If they say never: end politely. If they admit peaks: second line, then Qualify."
+            branches:
+              - {label: "Never late: end politely", outcome: PITCHED_NO}
+              - {label: "They admit peaks", to: qualify}
+          qualify:
+            title: Qualify
+            capture: true
+            say:
+              - "Of those three, hours, rejections, or nobody to do it, if you could wave a wand and fix one at {company}, which would it be?"
+              - "OK, I've had my thirty seconds, mind if we talk for one more minute?"
+              - "Great question and we'll get to that, right now this is about you and whether I can actually help. Quick one..."
+            cue: "Mirror their answer back word for word, same tone. Then line two. Line three only if they ask what you do. Type their words into Pain."
+            prompts:
+              - "When you say {?pain}\"{pain}\"{/pain}{!pain}that{/pain}, give me an example?"
+              - "How long has that been going on?"
+              - "What's it costing you a month, roughly?"
+              - "What have you tried?"
+              - "I'm guessing that worked?"
+            rules:
+              - Two pain questions at most.
+              - "Also get: PPAPs per year, which OEMs, any ITAR work."
+              - "ITAR work: end the call. We cannot take export-controlled drawings."
+            branches:
+              - {label: "They do ITAR work: end", outcome: PITCHED_NO, tag: ITAR}
+          ask:
+            title: Ask
+            say:
+              - "So {dm_first}, if I told you I fix exactly that, and I've done it for {?process}{process} {/process}shops in your spot, would that be something you want to explore?"
+              - "Let's pretend I can take {?pain}{pain}{/pain}{!pain}that{/pain} off your plate and the package is back the next business day, engineer-checked. Any reason you wouldn't talk to me for fifteen minutes?"
+            cue: "No prices on this call. The only goal is the fifteen minutes."
+          book:
+            title: Book
+            action: book
+            say:
+              - "I'll send the invite to {?email}{email}{/email}{!email}your email{/email}, that's right isn't it?"
+              - "Any reason you'd want to cancel? You're not going to hang up and think what have I done, I agreed to meet a salesperson?"
+            cue: "Only after a yes. Set the time on THEIR clock, tick each mini-contract as you say it, then confirm the email."
+            contracts:
+              - "If by the end you don't want to move forward, you OK telling me no?"
+              - "And if I can't help, I'll say so, you won't be upset?"
+              - "If neither of us says no, we spend a few minutes on a next step?"
+          voicemail_cutoff:
+            title: Voicemail, cut off
+            attempts: [1, 5]
+            say:
+              - "Hey {dm_first}, it's {agent}, you can get me back on {callback_number}, that's {callback_number}. Pretty urgent about the..."
+            cue: "Hang up mid-sentence. The number you read out must be the caller ID shown in the call bar."
+          voicemail_plain:
+            title: Voicemail, plain
+            attempts: [3]
+            say:
+              - "Hey {dm_first}, it's {agent} with PXL Kraft. I'm calling about the PPAP paperwork on your {?process}{process} {/process}parts. You can get me back on {callback_number}, that's {callback_number}. Thanks."
+          inbound:
+            title: They called back
+            say:
+              - "{agent} Pere."
+              - "You got a voicemail from me, I got cut off."
+              - "Ah yeah {dm_first}, I've been trying to get hold of you. I'll be honest, I've got something to sell you. Hang up, or give me 30 seconds and then decide?"
+            cue: "Answer with your name only. Then straight into the pull pitch."
+            branches:
+              - {label: "They give you thirty seconds", to: pitch}
+      # Example variant so the A/B split has something to split. Same tree, the
+      # pitch leads with the rejection pain instead of the hours. Edit or delete.
+      v2:
+        extends: v1
+        steps:
+          pitch:
+            title: Pull pitch, 30 seconds (rejections first)
+            say:
+              - "OK so look {dm_first}, I'm typically invited in by owners of {?process}{process} {/process}shops that make good parts but keep getting the PPAP kicked back. Usually it's one of three things. The OEM bounces it on element 9 or the PSW and nobody's sure why. Or the quality guy loses two or three days per package, so it lands a week late. Or there's just no one to do it, so the owner does it at night. I get the feeling you're going to tell me none of that applies at {company}?"
+
+    # Objections panel (hotkey o). Imperium three-part shape: anchor, pattern
+    # disrupt, question. `tag` links a card to a level-2 objection chip, so
+    # "heard it" on the card ticks the chip. Edits made in the app are kept in
+    # DATA_DIR/objections.json and override these by key.
+    objection_rule: "Ignore a knee-jerk objection the first time (\"thought so, let me ask...\") and only use the rebuttal if it comes back a second time. Handle at least two objections before ending. After a third, get an email and end."
     objections:
-      - q: Not interested
-        a: >-
-          Of course you're not, you don't have enough information to be. Quick
-          one, who builds the PPAP package at {company} today?
-      - q: Send me an email
-        a: >-
-          Happy to, doing it right now. So I include the right thing, is the
-          bigger question whether the AI actually catches every characteristic,
-          or who'd review it on your side?
-      - q: What do you do?
-        a: >-
-          AI builds your PPAP package from the drawing in under an hour, an
-          engineer checks it, back next business day in your customer's
-          template. How long does one take your team today?
+      - key: not_interested
+        title: Not interested
+        tag: NOT_INTERESTED
+        anchor: "Of course you're not, you don't have enough information to be. You don't know me and I don't know you."
+        disrupt: "When I called I knew you wouldn't be until you saw what I've got."
+        question: "Quick one, who builds the PPAP package at {company} today?"
+      - key: busy
+        title: Busy
+        tag: BUSY
+        anchor: "I know you're busy, and because you're busy this never gets done."
+        disrupt: "Let me ask this..."
+        question: "How many PPAPs a year are you sending out?"
+      - key: send_email
+        title: Send me an email
+        tag: SEND_EMAIL
+        anchor: "Happy to, doing it right now."
+        disrupt: "So I include the right thing..."
+        question: "Is the bigger question whether the AI actually catches every characteristic, or who'd review it on your side?"
+      - key: no_budget
+        title: No budget
+        tag: NO_BUDGET
+        anchor: "Makes sense, you didn't call me, I called you, why would you have a budget?"
+        disrupt: "Let me ask this..."
+        question: "What does a late package cost you{?oem} with {oem}{/oem}?"
+      - key: free_trial
+        title: Free trial ask
+        tag: FREE_TRIAL_ASK
+        anchor: "Love that, hats off."
+        disrupt: "People only ask that because they think they won't use it, it won't work, or they've been burned before."
+        question: "Which one is it for you?"
+        note: "Then say yes: the first package is free after the call, that's the whole point of the call."
+      - key: already_have
+        title: Already have someone / we do it in-house
+        tag: ALREADY_HAVE
+        anchor: "Almost everyone I talk to does."
+        disrupt: "I'm not saying switch. My goal is just enough info to see if there's an alternative, five minutes, and if it isn't a fit we both call it."
+        question: "Fair enough?"
+      - key: what_do_you_do
+        title: What do you do
+        tag: WHAT_DO_YOU_DO
+        anchor: "AI builds your PPAP package from the drawing in under an hour, an engineer checks it, back next business day in your customer's template."
+        disrupt: "(one line only, then straight to a question)"
+        question: "How long does one take your team today?"
+      - key: calls_all_the_time
+        title: I get calls like this all the time
+        anchor: "Me too, half the country has my number."
+        disrupt: "I don't know if what we do would help yet, we just met."
+        question: "Who does your PPAP paperwork right now?"
+      - key: are_you_selling
+        title: Are you a client / are you selling
+        anchor: "You sniffed that out fast. Not selling anything yet, just introducing myself."
+        disrupt: "Let me ask this..."
+        question: "Who builds the PPAP package at {company} today?"
+
+    # One-click follow-ups after BOOKED and RESONATED_NO. Subject is their
+    # first name only.
+    emails:
+      booked_confirm:
+        subject: "{dm_first}"
+        body: |
+          {dm_first},
+
+          Good talking just now. You're on my calendar for {booked_when}, your time, fifteen minutes. The invite is on its way to this address.
+
+          You told me: {?pain}"{pain}"{/pain}{!pain}the PPAP paperwork is the bottleneck{/pain}. That is exactly what we will look at. If you have a recent drawing handy, bring it and I will show you the package built from it while we talk.
+
+          If anything moves, this link reschedules in one click: {calendly}
+
+          {agent}
+          PXL Kraft
+      no_book_intrigue:
+        subject: "{dm_first}"
+        body: |
+          {dm_first},
+
+          Thanks for the couple of minutes today. You said: {?pain}"{pain}"{/pain}{!pain}the PPAP paperwork eats more days than it should{/pain}.
+
+          Here is the picture I could not paint on the phone. Your drawing goes in. Under an hour later there is a ballooned print, a control plan, a PFMEA draft, the dimensional layout and the PSW, in your customer's own template. An engineer checks it and it is back with you the next business day.
+
+          The fastest way to see it is on the call. Fifteen minutes, your drawing or one of mine: {calendly}
+
+          {agent}
+          PXL Kraft

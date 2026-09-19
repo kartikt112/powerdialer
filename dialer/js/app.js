@@ -10,7 +10,7 @@ import { S, on, emit, actions, outcome, busy } from "./state.js";
 import { api, withAgent } from "./api.js";
 import { toast, say, banner, modal, closeModal, closeMenus, menuOpen, toggleMenu, copyText } from "./ui.js";
 import { simulatorCarrier, twilioCarrier } from "./carrier.js";
-import { renderScript, renderTimeline, setScriptTab, wireScript } from "./script.js";
+import { renderScript, renderTimeline, wireScript, scriptKey, openObjections, closeObjections, objectionsOpen, setFlow, goStep } from "./script.js";
 import { renderOutcomes, setSuggested, resetWrap, wrapKey, getWrapMode, backToOutcomes, undo, wireWrap, draftKey, submitOutcome, freshCall } from "./wrap.js";
 import { refreshStats, statsSheet, wireFunnel } from "./funnel.js";
 import { sessionStartModal, sessionEndCard } from "./session.js";
@@ -376,7 +376,10 @@ function loadLead(lead, opts) {
   if (opts.state) { setState(opts.state); return; }
   setState("READY");
   $("lead-pane").scrollTop = 0;
-  if (S.session.on && !S.session.paused && !S.picked) startCountdown();
+  if (S.session.on && !S.session.paused && !S.picked) {
+    if (S.holdNext) { S.holdNext = false; $("cb-label").textContent = "Held · send the follow-up, space to dial"; }
+    else startCountdown();
+  }
 }
 
 function nextLead() {
@@ -427,7 +430,8 @@ function skip() {
   p.then(nextLead, nextLead);
 }
 
-function afterSave() {
+function afterSave(o) {
+  S.holdNext = !!(o && (o.booked || o.key === "RESONATED_NO"));
   S.cur = null; S.inbound = false; $("notes").value = ""; $("notes-saved").textContent = "";
   const ss = S.session;
   if (ss.on) { ss.dials++; renderEta(); }
@@ -512,7 +516,8 @@ function onAnswered() {
 }
 
 function onEnded(reason) {
-  setSuggested(reason === "voicemail" ? "VOICEMAIL" : reason === "no_answer" ? "NO_ANSWER" : "");
+  setSuggested(reason === "voicemail" ? (S.cur && S.cur.vm_allowed === false ? "NO_ANSWER" : "VOICEMAIL")
+    : reason === "no_answer" ? "NO_ANSWER" : (S.call.suggest || ""));
   S.wrapSec = 0;
   setState("WRAP");
   $("wrap-title").textContent = reason === "voicemail" ? "Reached voicemail" : reason === "no_answer" ? "No answer" : "How did it go?";
@@ -615,6 +620,7 @@ function acceptIncoming() {
   loadLead(lead, { handPicked: true, inbound: true, state: "READY" });
   wireCall(call.accept());
   onAnswered();
+  setFlow("inbound");
   emit("inbound-answered", lead);
 }
 
@@ -637,6 +643,7 @@ document.addEventListener("keydown", (e) => {
     if (modal.open) { closeModal(); return; }
     if (menuOpen()) { closeMenus(); return; }
     if (!$("keypad").hidden) { toggleKeypad(false); return; }
+    if (objectionsOpen() && !e.target.matches("textarea")) { closeObjections(); return; }
     if (e.target.matches("input, textarea")) { e.target.blur(); return; }
     if (getWrapMode()) { backToOutcomes(); return; }
     if (cancelCountdown(true)) { e.preventDefault(); return; }
@@ -667,7 +674,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "/") { e.preventDefault(); selectTab("queue"); document.body.classList.add("rail-open"); $("q").focus(); }
   else if (k === "d") { e.preventDefault(); manualModal(); }
   else if (k === "c" && S.cur) copyNumber();
-  else if (k === "o" && S.cur) setScriptTab("objections");
+  else if (scriptKey(e, e.key.length === 1 ? k : e.key)) return;
   else if (k === "z") undo();
   else if (k === "t") statsSheet();
   else if (k === "?") shortcutsModal();
@@ -780,7 +787,7 @@ function wire() {
 Object.assign(actions, {
   openLead, nextLead, loadLead, renderStats, afterSave, cancelCountdown, refreshQueue,
   autodialDelay, applyAudio, carrier: () => carrier, dial, hangup,
-  openObjections: () => setScriptTab("objections"),
+  openObjections,
   submitOutcome
 });
 

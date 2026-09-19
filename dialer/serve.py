@@ -28,6 +28,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -85,15 +86,121 @@ def load_dialer_config():
     cfg["campaign"] = (raw.get("campaign") or {}).get("name", "")
     cfg["_raw"] = raw                                       # retry / numbers / compliance, server side only
 
+    cfg["scripts"] = dict(cfg.get("scripts") or {})
+    cfg["scripts"]["tree"] = resolve_tree(cfg["scripts"].get("tree") or {})
+
     missing = REQUIRED_OUTCOMES - {o.get("key") for o in cfg["outcomes"]}
     if missing:
         raise SystemExit(f"config.yaml dialer.outcomes is missing required keys: {sorted(missing)}")
     return cfg
 
 
+def resolve_tree(tree):
+    """Flatten `extends:` so the browser gets complete versions. A variant
+    overrides whole steps' keys, nothing deeper, which keeps A/B edits small
+    and obvious."""
+    out = {}
+
+    def build(name, seen=()):
+        if name in out:
+            return out[name]
+        node = tree.get(name) or {}
+        base = {"order": {}, "steps": {}}
+        parent = node.get("extends")
+        if parent and parent in tree and parent not in seen:
+            resolved = build(parent, seen + (name,))
+            base = {"order": dict(resolved["order"]), "steps": {k: dict(v) for k, v in resolved["steps"].items()}}
+        base["order"].update(node.get("order") or {})
+        for step_id, step in (node.get("steps") or {}).items():
+            base["steps"][step_id] = dict(base["steps"].get(step_id, {}), **(step or {}))
+        out[name] = base
+        return base
+
+    for version in tree:
+        build(version)
+    return out
+
+
+def objections_path():
+    return os.path.join(DATA_DIR or ROOT, "objections.json")
+
+
+def merged_objections():
+    """config.yaml objections with the in-app edits laid over them by key."""
+    base = [dict(o) for o in (DIALER.get("scripts") or {}).get("objections") or []]
+    try:
+        with open(objections_path()) as fh:
+            edits = json.load(fh)
+    except (OSError, ValueError):
+        edits = {}
+    by_key = {o.get("key"): o for o in base}
+    for key, edit in edits.items():
+        if key in by_key:
+            by_key[key].update(edit, edited=True)
+        else:
+            base.append(dict(edit, key=key, edited=True, custom=True))
+    return base
+
+
+def save_objection(data):
+    key = re.sub(r"[^a-z0-9_]", "", str(data.get("key") or "").lower())[:40]
+    title = str(data.get("title") or "").strip()[:80]
+    if not key:
+        key = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:40]
+    if not key or not title:
+        return "An objection needs a title."
+    fields = {k: str(data.get(k) or "").strip()[:600] for k in ("title", "anchor", "disrupt", "question", "note", "tag")}
+    if any("\u2014" in v for v in fields.values()):
+        return "No em dashes in scripts. Use a comma or a full stop."
+    try:
+        with open(objections_path()) as fh:
+            edits = json.load(fh)
+    except (OSError, ValueError):
+        edits = {}
+    edits[key] = fields
+    os.makedirs(os.path.dirname(objections_path()), exist_ok=True)
+    with open(objections_path(), "w") as fh:
+        json.dump(edits, fh, indent=2)
+    return None
+
+
+def fire_booking_webhook(dispo_id, lead, booked_for_utc, booked_for_local, extra, agent):
+    """Tell the outside world a call was booked, without holding up the save."""
+    url = DIALER.get("booking_webhook_url")
+    if not url:
+        return "off"
+    payload = {
+        "event": "call_booked", "disposition_id": dispo_id, "agent": agent,
+        "booked_for_utc": booked_for_utc, "booked_for_local": booked_for_local,
+        "timezone": (lead or {}).get("tz_name") or "", "calendly_url": DIALER.get("calendly_url") or "",
+        "lead": {k: (lead or {}).get(k) or "" for k in ("phone", "company", "first", "last", "title", "city", "state",
+                                                         "website", "linkedin_url", "process", "oem", "employees")},
+        "dm_name": extra.get("dm_name") or "", "email": extra.get("email") or "", "mobile": extra.get("mobile") or "",
+        "pain": extra.get("pain") or "", "script_version": extra.get("script_version") or "",
+    }
+
+    def post():
+        body = json.dumps(payload).encode()
+        status, reply = 0, ""
+        try:
+            req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as resp:
+                status, reply = resp.status, resp.read(300).decode("utf-8", "replace")
+        except Exception as e:                                   # logged, never raised: the booking is already saved
+            reply = str(e)[:300]
+        db.log_webhook(url, body.decode(), status, reply)
+        print(f"  WEBHOOK      booking {dispo_id} -> {status or 'failed'} {reply[:60]}")
+
+    threading.Thread(target=post, daemon=True).start()
+    return "queued"
+
+
 def public_config():
     """What the browser may see: everything except the raw file."""
-    return {k: v for k, v in DIALER.items() if not k.startswith("_")}
+    out = {k: v for k, v in DIALER.items() if not k.startswith("_") and k != "booking_webhook_url"}
+    out["scripts"] = dict(out.get("scripts") or {}, objections=merged_objections())
+    out["booking_webhook"] = bool(DIALER.get("booking_webhook_url"))
+    return out
 
 
 DIALER = dict(DIALER_DEFAULTS)
@@ -672,9 +779,13 @@ class Handler(BaseHTTPRequestHandler):
             dispo_id = db.disposition(phone, data.get("company", ""), code,
                                       (data.get("notes") or "")[:2000], self._agent(data),
                                       int(data.get("duration") or 0), callback_at=when, extra=extra)
+            webhook = None
+            if extra.get("booked_for"):
+                webhook = fire_booking_webhook(dispo_id, lead, extra["booked_for"], data.get("booked_for_local"),
+                                               extra, self._agent(data))
             print(f"  {code:12s} {phone}  {data.get('company', '')}"
                   + (f"  [{(data.get('notes') or '')[:60]}]" if data.get("notes") else ""))
-            return self._json({"ok": True, "id": dispo_id,
+            return self._json({"ok": True, "id": dispo_id, "webhook": webhook,
                                "stats": db.stats(self._agent(data))})
 
         if route == "/api/undo":
@@ -707,6 +818,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "lead not found"}, 404)
             return self._json({"ok": True, "callbacks": db.callbacks_list(),
                                "stats": db.stats(self._agent(data))})
+
+        if route == "/api/objections":
+            error = save_objection(data)
+            if error:
+                return self._json({"error": error}, 400)
+            return self._json({"ok": True, "objections": merged_objections()})
 
         if route == "/api/session/start":
             versions = script_versions()
