@@ -1,920 +1,241 @@
-<title>Dialer</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Powerdialer</title>
+<script>
+  /* Resolve the theme before first paint so there is no flash. */
+  (function () {
+    var t = "system";
+    try { t = localStorage.getItem("pd_theme") || "system"; } catch (e) {}
+    if (t === "system") t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body data-state="idle">
 
-<style>
-  :root {
-    --paper:  #f7f8f7;
-    --card:   #ffffff;
-    --ink:    #14181a;
-    --mid:    #6a757b;
-    --rule:   #e2e5e4;
-    --accent: #1d6f7d;
-    --go:     #17864f;
-    --stop:   #b23a28;
-    --warn:   #9a6b12;
-    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --paper: #101416; --card: #181e21; --ink: #e7ebe9;
-      --mid: #8b979d; --rule: #293135; --accent: #58aebe;
-      --go: #35b06a; --stop: #e0705a; --warn: #d9a441;
-    }
-  }
-  :root[data-theme="dark"] {
-    --paper: #101416; --card: #181e21; --ink: #e7ebe9;
-    --mid: #8b979d; --rule: #293135; --accent: #58aebe;
-    --go: #35b06a; --stop: #e0705a; --warn: #d9a441;
-  }
-  :root[data-theme="light"] {
-    --paper: #f7f8f7; --card: #ffffff; --ink: #14181a;
-    --mid: #6a757b; --rule: #e2e5e4; --accent: #1d6f7d;
-    --go: #17864f; --stop: #b23a28; --warn: #9a6b12;
-  }
+<!-- ================================================================ top -->
+<header class="top">
+  <button class="btn icon quiet rail-toggle" id="b-rail" aria-label="Show queue and callbacks"></button>
+  <div class="brand"><i class="mark" id="brand-mark"></i><span>Powerdialer</span></div>
 
-  body {
-    background: var(--paper); color: var(--ink); font-family: var(--sans);
-    line-height: 1.5; -webkit-font-smoothing: antialiased; margin: 0;
-  }
-  .app {
-    max-width: 1180px; margin: 0 auto; padding: 0 20px 40px;
-    display: flex; flex-direction: column; min-height: 100vh;
-  }
-  /* The hidden attribute must beat every display rule below. */
-  [hidden] { display: none !important; }
-
-  button { font-family: inherit; cursor: pointer; }
-  button:focus-visible, [tabindex]:focus-visible {
-    outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px;
-  }
-  .label {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .13em;
-    text-transform: uppercase; color: var(--mid);
-  }
-  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-
-  /* ---------- status strip ---------- */
-  .strip {
-    display: flex; align-items: center; gap: 8px 22px; flex-wrap: wrap;
-    padding: 14px 0; border-bottom: 1px solid var(--rule);
-  }
-  .strip .grow { flex: 1; }
-  .stat { display: flex; flex-direction: column; gap: 1px; }
-  .stat b { font-family: var(--mono); font-variant-numeric: tabular-nums;
-            font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
-  .stat b.over { color: var(--stop); }
-  .lamp {
-    display: inline-flex; align-items: center; gap: 7px;
-    font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
-    text-transform: uppercase; font-weight: 500;
-  }
-  .lamp i {
-    width: 8px; height: 8px; border-radius: 50%; background: var(--mid);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--mid) 18%, transparent);
-  }
-  .lamp.ready i { background: var(--go); box-shadow: 0 0 0 3px color-mix(in srgb, var(--go) 20%, transparent); }
-  .lamp.busy  i { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 20%, transparent); animation: pulse 1.1s ease-in-out infinite; }
-  .lamp.live  i { background: var(--go); box-shadow: 0 0 0 3px color-mix(in srgb, var(--go) 22%, transparent); animation: pulse 1.6s ease-in-out infinite; }
-  .lamp.dispo i { background: var(--stop); box-shadow: 0 0 0 3px color-mix(in srgb, var(--stop) 20%, transparent); }
-  @keyframes pulse { 50% { opacity: .35; } }
-
-  /* ---------- main stage ---------- */
-  .stage { display: grid; grid-template-columns: 1fr 264px; gap: 28px; padding-top: 30px; flex: 1; }
-  @media (max-width: 860px) { .stage { grid-template-columns: 1fr; } }
-
-  .card {
-    background: var(--card); border: 1px solid var(--rule); border-radius: 14px;
-    padding: 34px 34px 30px; display: flex; flex-direction: column; gap: 22px;
-  }
-  .who { display: flex; flex-direction: column; gap: 5px; }
-  .company {
-    font-size: clamp(26px, 3.6vw, 36px); font-weight: 680; letter-spacing: -.026em;
-    line-height: 1.1; text-wrap: balance; margin: 0;
-  }
-  .person { color: var(--mid); font-size: 15px; }
-  .person b { color: var(--ink); font-weight: 600; }
-
-  .phone {
-    font-family: var(--mono); font-variant-numeric: tabular-nums;
-    font-size: clamp(30px, 5vw, 46px); font-weight: 500; letter-spacing: -.03em;
-    line-height: 1; margin: 2px 0 0;
-  }
-  .phone small { font-size: .42em; color: var(--mid); letter-spacing: .04em; margin-left: 10px; }
-
-  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
-  .chip {
-    font-size: 12px; padding: 4px 10px; border-radius: 20px;
-    border: 1px solid var(--rule); color: var(--mid); white-space: nowrap;
-  }
-  .chip b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .chip.hot { border-color: color-mix(in srgb, var(--go) 45%, transparent); color: var(--go); }
-  .chip.hot b { color: var(--go); }
-  .chip.past { border-color: color-mix(in srgb, var(--warn) 50%, transparent); color: var(--warn); }
-  .chip.past b { color: var(--warn); }
-
-  .lastnote {
-    font-size: 13px; color: var(--mid); font-style: italic;
-    border-left: 2px solid var(--warn); padding: 2px 0 2px 12px;
-  }
-
-  .script {
-    font-size: 14.5px; line-height: 1.62; color: var(--ink);
-    background: color-mix(in srgb, var(--accent) 6%, transparent);
-    border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0;
-    padding: 14px 16px;
-  }
-  .script .must { color: var(--stop); font-weight: 600; }
-  .script b { font-weight: 650; }
-
-  /* ---------- action bar ---------- */
-  .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .big {
-    border: none; border-radius: 10px; color: #fff; font-size: 16px; font-weight: 620;
-    letter-spacing: -.01em; padding: 16px 30px; display: inline-flex; align-items: center; gap: 11px;
-    transition: filter .12s ease, transform .06s ease;
-  }
-  .big:hover:not(:disabled) { filter: brightness(1.08); }
-  .big:active:not(:disabled) { transform: translateY(1px); }
-  .big:disabled { opacity: .32; cursor: not-allowed; }
-  .big.go   { background: var(--go); }
-  .big.stop { background: var(--stop); }
-  .big kbd {
-    font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.22);
-    border-radius: 4px; padding: 2px 6px; letter-spacing: .04em;
-  }
-  .ghost {
-    background: none; border: 1px solid var(--rule); color: var(--mid);
-    border-radius: 8px; padding: 15px 18px; font-size: 14px;
-  }
-  .ghost:hover:not(:disabled) { color: var(--ink); border-color: var(--mid); }
-  .ghost:disabled { opacity: .35; cursor: not-allowed; }
-  .ghost.on { color: var(--stop); border-color: var(--stop); }
-  .ghost kbd {
-    font-family: var(--mono); font-size: 10px; color: var(--mid);
-    border: 1px solid var(--rule); border-radius: 3px; padding: 1px 4px; margin-left: 6px;
-  }
-  .timer {
-    font-family: var(--mono); font-variant-numeric: tabular-nums;
-    font-size: 30px; font-weight: 500; letter-spacing: -.02em; margin-left: auto;
-  }
-  .timer.hide { visibility: hidden; }
-  .hint { font-size: 11.5px; color: var(--mid); width: 100%; }
-
-  /* ---------- dispositions ---------- */
-  .dispo { display: flex; flex-direction: column; gap: 12px; }
-  .dispo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 8px; }
-  .dispo-grid button {
-    background: var(--card); border: 1px solid var(--rule); color: var(--ink);
-    border-radius: 9px; padding: 13px 14px; font-size: 14px; font-weight: 550;
-    text-align: left; display: flex; align-items: center; gap: 10px;
-    transition: border-color .12s ease, background .12s ease;
-  }
-  .dispo-grid button:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--card)); }
-  .dispo-grid button kbd {
-    font-family: var(--mono); font-size: 11px; color: var(--mid);
-    border: 1px solid var(--rule); border-radius: 4px; padding: 1px 6px; flex: none;
-  }
-  .dispo-grid button.warn { border-color: color-mix(in srgb, var(--stop) 40%, transparent); color: var(--stop); }
-  .dispo-grid button.warn:hover { background: color-mix(in srgb, var(--stop) 8%, var(--card)); border-color: var(--stop); }
-
-  .notes {
-    width: 100%; box-sizing: border-box; resize: vertical; min-height: 52px;
-    background: var(--paper); border: 1px solid var(--rule); border-radius: 9px;
-    color: var(--ink); font-family: var(--sans); font-size: 14px; padding: 10px 12px;
-  }
-  .notes:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-  .cbrow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-  .cbrow input[type="datetime-local"] {
-    background: var(--paper); border: 1px solid var(--rule); border-radius: 8px;
-    color: var(--ink); font-family: var(--mono); font-size: 13px; padding: 10px 12px;
-  }
-
-  /* ---------- rail ---------- */
-  .rail { display: flex; flex-direction: column; gap: 22px; }
-  .rail h2 { font-family: var(--mono); font-size: 10px; letter-spacing: .13em;
-             text-transform: uppercase; color: var(--mid); font-weight: 500; margin: 0 0 10px; }
-  .next { display: flex; flex-direction: column; gap: 2px; }
-  .next .row {
-    display: flex; align-items: baseline; gap: 10px; padding: 9px 0;
-    border-bottom: 1px solid var(--rule); font-size: 13.5px;
-  }
-  .next .row:last-child { border-bottom: none; }
-  .next .rk {
-    font-family: var(--mono); font-size: 11px; color: var(--mid);
-    font-variant-numeric: tabular-nums; flex: none; width: 22px;
-  }
-  .next .co { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .next .st { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--mid); flex: none; }
-
-  .meter { height: 5px; border-radius: 3px; background: var(--rule); overflow: hidden; }
-  .meter i { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
-  .meterrow { display: flex; justify-content: space-between; font-size: 12px; color: var(--mid); margin-bottom: 7px; }
-  .meterrow b { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
-
-  .vmlist { display: flex; flex-direction: column; gap: 2px; }
-  .vmlist .row {
-    display: flex; align-items: center; gap: 8px; padding: 8px 0;
-    border-bottom: 1px solid var(--rule); font-size: 12.5px;
-  }
-  .vmlist .row:last-child { border-bottom: none; }
-  .vmlist button {
-    background: none; border: 1px solid var(--rule); color: var(--accent);
-    border-radius: 6px; font-size: 11px; padding: 3px 9px; flex: none;
-  }
-  .vmlist .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .vmlist .who b { font-weight: 600; }
-  .vmlist .dur { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--mid); flex: none; }
-  .vmlist .none { font-size: 12.5px; color: var(--mid); }
-
-  .feed { display: flex; flex-direction: column; gap: 5px; max-height: 190px; overflow-y: auto; }
-  .feed div { font-size: 12.5px; color: var(--mid); display: flex; gap: 8px; }
-  .feed time { font-family: var(--mono); font-size: 11px; flex: none; opacity: .75; }
-
-  .banner {
-    font-size: 12.5px; color: var(--mid); border: 1px dashed var(--rule);
-    border-radius: 9px; padding: 11px 13px; line-height: 1.45;
-  }
-  .banner b { color: var(--ink); font-weight: 600; }
-
-  /* ---------- incoming call overlay ---------- */
-  .incoming {
-    position: fixed; inset: 0; background: color-mix(in srgb, var(--ink) 34%, transparent);
-    display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh;
-    z-index: 50;
-  }
-  .incoming .box {
-    background: var(--card); border: 1px solid var(--rule); border-radius: 14px;
-    padding: 28px 32px; width: min(420px, 90vw); display: flex; flex-direction: column;
-    gap: 14px; box-shadow: 0 18px 50px rgba(0,0,0,.25);
-  }
-  .incoming .box .row { display: flex; gap: 12px; }
-
-  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
-</style>
-
-<div class="app">
-
-  <div class="strip">
-    <span class="lamp ready" id="lamp"><i></i><span id="lamp-text">Ready</span></span>
-    <button class="ghost" id="b-load" style="padding:9px 14px">Load list…</button>
-    <input type="file" id="f-list" accept=".xlsx,.xls,.csv" hidden>
-    <span class="grow"></span>
-    <span class="stat"><span class="label">Caller ID</span><b id="s-cid">—</b></span>
-    <span class="stat"><span class="label">Dials today</span><b id="s-dials">0 / 150</b></span>
-    <span class="stat"><span class="label">Connects</span><b id="s-conn">0</b></span>
-    <span class="stat"><span class="label">Interested</span><b id="s-int">0</b></span>
-    <span class="stat"><span class="label">Callbacks due</span><b id="s-cb">0</b></span>
-    <span class="stat"><span class="label">Queue</span><b id="s-queue">—</b></span>
+  <div class="session">
+    <span class="lamp" id="lamp" role="status"><i></i><span id="lamp-text">Idle</span></span>
+    <button class="btn primary sm" id="b-session">Start session</button>
+    <div class="menu-wrap" id="pause-wrap" hidden>
+      <button class="btn sm" id="b-pause" aria-haspopup="menu" aria-expanded="false">Pause</button>
+      <div class="menu left" id="pause-menu" role="menu" hidden></div>
+    </div>
+    <span class="session-clock num" id="session-clock" hidden>00:00:00</span>
   </div>
 
-  <div class="stage">
-    <main class="card" id="card">
-      <div class="who">
-        <span class="label" id="c-rank">—</span>
-        <h1 class="company" id="c-company">—</h1>
-        <p class="person" id="c-person"></p>
+  <div class="kpis" aria-label="Today">
+    <div class="kpi"><span class="eyebrow">Dials</span><b id="k-dials">0<small>/ 150</small></b><span class="goal" title="Daily goal"><i id="k-goal"></i></span></div>
+    <div class="kpi"><span class="eyebrow">Connects</span><b id="k-conn">0<small>—</small></b></div>
+    <div class="kpi opt2"><span class="eyebrow">Interested</span><b id="k-int">0</b></div>
+    <div class="kpi opt"><span class="eyebrow">Talk time</span><b id="k-talk">0:00</b></div>
+    <div class="kpi opt"><span class="eyebrow">Pace</span><b id="k-pace">—<small>/hr</small></b></div>
+    <button class="kpi kpi-btn opt2" id="k-cb-btn" title="Open callbacks"><span class="eyebrow">Callbacks</span><b id="k-cb">0<small>due</small></b></button>
+  </div>
+
+  <div class="tools">
+    <button class="btn icon quiet" id="b-keys" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"></button>
+    <div class="menu-wrap">
+      <button class="avatar" id="b-agent" aria-haspopup="menu" aria-expanded="false"><i id="agent-ini">A</i><span id="agent-name">agent</span></button>
+      <div class="menu" id="agent-menu" role="menu" hidden>
+        <div class="head"><b id="am-name">Agent</b><span id="am-seat">seat</span></div>
+        <button role="menuitem" data-act="switch"><span data-ic="user"></span>Switch agent</button>
+        <button role="menuitem" data-act="load"><span data-ic="upload"></span>Load list…</button>
+        <a role="menuitem" href="/api/dnc.csv" download="dnc.csv"><span data-ic="download"></span>Export do-not-call list</a>
+        <hr>
+        <button role="menuitem" data-act="log"><span data-ic="activity"></span>Activity log</button>
+        <button role="menuitem" data-act="keys"><span data-ic="keyboard"></span>Keyboard shortcuts<kbd>?</kbd></button>
+        <button role="menuitem" data-act="settings"><span data-ic="sliders"></span>Settings</button>
       </div>
+    </div>
+    <input type="file" id="f-list" accept=".xlsx,.xls,.csv" hidden>
+  </div>
+</header>
 
-      <div>
-        <p class="phone" id="c-phone">—</p>
-        <div class="chips" id="c-chips"></div>
+<div class="banner" id="banner" hidden><span data-ic="alert"></span><span id="banner-text"></span></div>
+
+<!-- ============================================================== panes -->
+<div class="panes">
+
+  <aside class="rail" id="rail" aria-label="Queue, callbacks, calls and inbox">
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="queue" aria-selected="true"><span>Queue</span><span class="count" id="n-queue"></span></button>
+      <button class="tab" role="tab" data-tab="callbacks" aria-selected="false"><span>Callbacks</span><span class="count" id="n-cb"></span></button>
+      <button class="tab" role="tab" data-tab="calls" aria-selected="false"><span>Calls</span><span class="count" id="n-calls"></span></button>
+      <button class="tab" role="tab" data-tab="inbox" aria-selected="false"><span>Inbox</span><span class="count hot" id="n-inbox"></span></button>
+    </div>
+
+    <section class="panel" id="p-queue" role="tabpanel">
+      <div class="panel-head">
+        <label class="search"><span class="sr">Search leads</span><span data-ic="search"></span>
+          <input class="field" id="q" type="search" placeholder="Search company, person, number" autocomplete="off"><kbd>/</kbd></label>
+        <button class="btn icon" id="b-manual" aria-label="Dial a number" title="Dial a number (d)"></button>
       </div>
+      <div class="list" id="l-queue"></div>
+    </section>
 
-      <p class="lastnote" id="c-note" hidden></p>
-      <p class="script" id="c-script"></p>
+    <section class="panel" id="p-callbacks" role="tabpanel" hidden>
+      <div class="list" id="l-callbacks"></div>
+    </section>
 
-      <div class="actions" id="act-main">
-        <button class="big go" id="b-dial">Dial <kbd>space</kbd></button>
-        <button class="big stop" id="b-hangup" disabled>Hang up <kbd>space</kbd></button>
-        <button class="ghost" id="b-mute" disabled>Mute<kbd>m</kbd></button>
-        <button class="ghost" id="b-vmdrop" disabled>Drop VM<kbd>v</kbd></button>
-        <button class="ghost" id="b-skip">Skip<kbd>s</kbd></button>
-        <span class="timer hide num" id="c-timer">00:00</span>
-        <span class="hint" id="c-hint" hidden>On a call: number keys send touch-tones for phone menus.</span>
-      </div>
+    <section class="panel" id="p-calls" role="tabpanel" hidden>
+      <div class="breakdown" id="breakdown" hidden></div>
+      <div class="list" id="l-calls"></div>
+    </section>
 
-      <div class="dispo" id="act-dispo" hidden>
-        <span class="label">How did it go? Pick one to load the next lead.</span>
-        <textarea class="notes" id="notes" rows="2"
-          placeholder="Notes — what was said, who to ask for, objections… (saved with the disposition)"></textarea>
-        <div class="dispo-grid" id="dispo-grid"></div>
-        <div class="cbrow" id="cb-row" hidden>
-          <span class="label">Call back when?</span>
-          <button class="ghost" data-cb="1" style="padding:9px 13px"><kbd style="border:none">1</kbd> In 1 hour</button>
-          <button class="ghost" data-cb="3" style="padding:9px 13px"><kbd style="border:none">2</kbd> In 3 hours</button>
-          <button class="ghost" data-cb="tomorrow" style="padding:9px 13px"><kbd style="border:none">3</kbd> Tomorrow 10am (their time)</button>
-          <input type="datetime-local" id="cb-custom">
-          <button class="ghost" id="cb-custom-go" style="padding:9px 13px">Set</button>
+    <section class="panel" id="p-inbox" role="tabpanel" hidden>
+      <div class="list" id="l-inbox"></div>
+      <audio id="vm-audio" controls style="width:calc(100% - 20px);margin:0 10px 10px" hidden></audio>
+    </section>
+  </aside>
+
+  <div class="work">
+    <div class="scroller">
+
+      <main class="lead-pane" id="lead-pane">
+        <!-- lead -->
+        <article class="lead" id="lead" hidden>
+          <div class="lead-head">
+            <div class="tags" id="c-tags"></div>
+            <h1 class="company" id="c-company"></h1>
+            <p class="person" id="c-person"></p>
+          </div>
+
+          <div class="phone-row">
+            <span class="phone" id="c-phone"></span>
+            <button class="btn icon sm quiet" id="b-copy" aria-label="Copy number" title="Copy number (c)"></button>
+            <span class="localtime" id="c-local"></span>
+          </div>
+
+          <div class="chips" id="c-chips"></div>
+          <div class="links" id="c-links"></div>
+          <div class="callout" id="c-note" hidden></div>
+
+          <div class="notes-box">
+            <div class="row-h">
+              <label class="eyebrow" for="notes">Notes <span style="text-transform:none;letter-spacing:0">· saved with the outcome</span></label>
+              <span class="saved" id="notes-saved"></span>
+            </div>
+            <textarea class="field" id="notes" rows="3" placeholder="What was said, who to ask for, objections…   (press n to jump here, Esc to leave)"></textarea>
+          </div>
+
+          <section class="wrap" id="wrap" hidden aria-label="Wrap-up">
+            <div class="wrap-h"><h2 id="wrap-title">How did it go?</h2><span>Pick one to save and move on</span></div>
+            <div class="outcomes" id="outcomes"></div>
+
+            <div class="subpanel" id="cb-panel" hidden>
+              <span class="eyebrow">Call back when?</span>
+              <div class="cb-grid" id="cb-grid"></div>
+              <div class="cb-custom">
+                <input class="field" type="datetime-local" id="cb-custom" aria-label="Custom callback time, in your local time">
+                <button class="btn" id="cb-custom-go">Set callback</button>
+                <span class="hint" id="cb-hint">Your local time.</span>
+                <button class="btn quiet sm" id="cb-back" style="margin-left:auto">Back <kbd>esc</kbd></button>
+              </div>
+            </div>
+
+            <div class="subpanel confirm" id="dnc-panel" hidden>
+              <p><b>Block this number for good?</b> It comes off every list, now and in future loads. Use it when they asked not to be called again.</p>
+              <div class="acts">
+                <button class="btn danger solid" id="dnc-yes">Yes, do not call <kbd style="background:rgba(255,255,255,.18);border-color:transparent;color:#fff">enter</kbd></button>
+                <button class="btn" id="dnc-no">Cancel <kbd>esc</kbd></button>
+              </div>
+            </div>
+          </section>
+        </article>
+
+        <!-- nothing to dial -->
+        <div class="lead" id="empty">
+          <div class="empty">
+            <span class="glyph" id="e-glyph"></span>
+            <h1 id="e-title">Connecting…</h1>
+            <p id="e-text"></p>
+            <div class="acts" id="e-acts"></div>
+          </div>
         </div>
-      </div>
-    </main>
+      </main>
 
-    <aside class="rail">
-      <div>
-        <div class="meterrow"><span>Today</span><span><b id="m-done">0</b> / <b id="m-goal">100</b></span></div>
-        <div class="meter"><i id="m-bar" style="width:0%"></i></div>
+      <aside class="right" aria-label="Script and history">
+        <section>
+          <div class="sect-h"><span class="eyebrow">Script</span></div>
+          <div class="seg" role="tablist" id="script-tabs">
+            <button role="tab" data-s="opener" aria-selected="true">Opener</button>
+            <button role="tab" data-s="voicemail" aria-selected="false">Voicemail</button>
+            <button role="tab" data-s="gatekeeper" aria-selected="false">Gatekeeper</button>
+            <button role="tab" data-s="objections" aria-selected="false">Objections</button>
+          </div>
+          <div class="script" id="script"></div>
+        </section>
+        <section>
+          <div class="sect-h"><span class="eyebrow">History</span><span class="muted" id="h-count"></span></div>
+          <div class="timeline" id="timeline"></div>
+        </section>
+      </aside>
+    </div>
+
+    <!-- ========================================================= call bar -->
+    <footer class="callbar" id="callbar">
+      <div class="cb-state" id="cb-state">
+        <span class="eyebrow" id="cb-label">Standing by</span>
+        <span class="timer dim" id="cb-timer">00:00</span>
       </div>
-      <div>
-        <h2>Up next</h2>
-        <div class="next" id="next"></div>
+      <div class="countdown" id="countdown" hidden>
+        <span class="ring" id="ring"><svg viewBox="0 0 40 40"><circle class="track" cx="20" cy="20" r="17"/><circle class="fill" cx="20" cy="20" r="17"/></svg><b id="cd-n">3</b></span>
+        <span class="txt"><b>Dialing next lead</b><span><kbd>esc</kbd> hold · <kbd>space</kbd> dial now</span></span>
       </div>
-      <div>
-        <h2>Voicemails</h2>
-        <div class="vmlist" id="vmlist"><span class="none">None yet.</span></div>
-        <audio id="vm-audio" controls style="width:100%; margin-top:8px; display:none"></audio>
+
+      <div class="cb-main">
+        <button class="big go" id="b-dial"><span data-ic="phone" data-cls="lg"></span>Dial <kbd>space</kbd></button>
+        <button class="big stop" id="b-hangup" hidden><span data-ic="phone" data-cls="lg hang"></span>Hang up <kbd>space</kbd></button>
+        <button class="btn" id="b-mute" disabled><span data-ic="mic"></span><span id="mute-t">Mute</span><kbd>m</kbd></button>
+        <button class="btn" id="b-keypad" disabled aria-expanded="false"><span data-ic="keypad"></span>Keypad<kbd>k</kbd></button>
+        <button class="btn" id="b-vmdrop" disabled title="Play your recorded voicemail and move on"><span data-ic="voicemail"></span>Drop VM<kbd>v</kbd></button>
+        <button class="btn quiet" id="b-skip" disabled><span data-ic="skip"></span>Skip<kbd>s</kbd></button>
       </div>
-      <div>
-        <h2>Activity</h2>
-        <div class="feed" id="feed"></div>
+
+      <div class="cb-side">
+        <span class="pill warn" id="quality" hidden><span data-ic="signal" data-cls="sm"></span><span id="quality-t">Poor connection</span></span>
+        <span class="pill danger rec" id="rec" hidden><i></i>REC</span>
+        <span class="pill" id="mode-pill" hidden></span>
+        <span class="cid">Calling from<b id="cid">—</b></span>
       </div>
-      <p class="banner" id="banner"></p>
-    </aside>
+
+      <div class="keypad-pop" id="keypad" hidden>
+        <div class="keypad-out num" id="keypad-out" aria-live="polite"></div>
+        <div class="keys" id="keys"></div>
+        <p class="keypad-hint" id="keypad-hint">Number keys send tones while you are on a call.</p>
+      </div>
+    </footer>
   </div>
 </div>
 
-<div class="incoming" id="incoming" hidden>
-  <div class="box">
-    <span class="label">Incoming call</span>
-    <h1 class="company" id="in-co" style="font-size:26px">Unknown caller</h1>
-    <p class="person" id="in-who"></p>
-    <div class="row">
-      <button class="big go" id="b-accept" style="flex:1">Answer</button>
-      <button class="ghost" id="b-decline" style="flex:1">Decline</button>
+<!-- ============================================================ overlays -->
+<div class="overlay incoming" id="incoming" hidden role="alertdialog" aria-labelledby="in-co">
+  <div class="dialog">
+    <div class="dh"><div><span class="eyebrow">Incoming call</span><h2 id="in-co" style="font-size:24px;margin-top:8px">Unknown caller</h2><p class="sub" id="in-who"></p></div>
+      <span class="ringer"><span data-ic="phone" data-cls="lg"></span></span></div>
+    <div class="acts">
+      <button class="big go" id="b-accept" style="justify-content:center">Answer</button>
+      <button class="btn" id="b-decline" style="height:46px">Decline</button>
     </div>
   </div>
 </div>
 
-<script>
-(function () {
-  "use strict";
+<div class="overlay" id="modal" hidden><div class="dialog" id="modal-box" role="dialog" aria-modal="true"></div></div>
 
-  /* Demo leads for offline preview only; a running server owns the queue. */
-  var DEMO = [
-    { rank:90, first:"Stephen", last:"Bruner", co:"Corkcicle", title:"Co-founder & CMO",
-      phone:"+14079249845", city:"Orlando", state:"FL", tt:"67600", size:"73",
-      attempts:0, history:[], local_time:"—" },
-    { rank:90, first:"Katie", last:"Kaps", co:"HigherDOSE", title:"Co-founder & Co-CEO",
-      phone:"+16143399820", city:"New York", state:"NY", tt:"14500", size:"29",
-      attempts:0, history:[], local_time:"—" },
-    { rank:88, first:"Heidi", last:"Felix", co:"LifeVac", title:"VP of Sales",
-      phone:"+15166412567", city:"Nesconset", state:"NY", tt:"33400", size:"30",
-      attempts:0, history:[], local_time:"—" }
-  ];
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
-  var DISPOS = [
-    { key:"INTERESTED", label:"Interested",     hot:true  },
-    { key:"CALLBACK",   label:"Callback",       hot:false },
-    { key:"NOT_INT",    label:"Not interested", hot:false },
-    { key:"VOICEMAIL",  label:"Voicemail",      hot:false },
-    { key:"NO_ANSWER",  label:"No answer",      hot:false },
-    { key:"DNC",        label:"Do not call",    hot:false, warn:true }
-  ];
-
-  var GOAL = 100;
-  var state = "IDLE";           // IDLE READY DIALING LIVE DISPO DISPO_CB
-  var cur = null;               // the checked-out lead payload
-  var stats = null, sec = 0, tick = null, rng = 7;
-  var live = false;             // Twilio Device attached
-  var inbound = false;          // current call came in, not out
-  var CID = "";
-  var AGENT = localStorage.getItem("dialer_agent") || "agent1";
-  var device = null, activeCall = null, incomingCall = null;
-  var OFFLINE = false, demoIdx = 0, demoDials = 0;
-
-  var $ = function (id) { return document.getElementById(id); };
-  var fmtPhone = function (p) {
-    var d = (p || "").replace(/[^\d]/g, "").replace(/^1/, "");
-    return d.length === 10 ? "(" + d.slice(0,3) + ") " + d.slice(3,6) + "-" + d.slice(6) : p;
-  };
-  var fmtTime = function (s) {
-    var m = Math.floor(s / 60), r = s % 60;
-    return (m<10?"0":"") + m + ":" + (r<10?"0":"") + r;
-  };
-  var followers = function (raw) {
-    var m = /\d+(?:\.\d+)?/.exec(String(raw || "").replace(/,/g, ""));
-    return m ? Math.round(parseFloat(m[0])) : 0;
-  };
-  var fmtNum = function (n) { return Number(n).toLocaleString("en-US"); };
-
-  function say(msg) {
-    var f = $("feed"), row = document.createElement("div");
-    row.innerHTML = "<time>" + new Date().toTimeString().slice(0,5) + "</time><span>" + msg + "</span>";
-    f.prepend(row);
-    while (f.children.length > 30) f.lastChild.remove();
-  }
-
-  function lamp(cls, text) {
-    $("lamp").className = "lamp " + cls;
-    $("lamp-text").textContent = text;
-  }
-
-  /* ------------------------------------------------------------ server -- */
-
-  function api(path, body) {
-    if (OFFLINE) return Promise.resolve(demoApi(path, body));
-    var opts = body !== undefined
-      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-      : undefined;
-    return fetch(path, opts).then(function (r) { return r.json(); });
-  }
-
-  function demoApi(path, body) {
-    if (path.indexOf("/api/next") === 0) {
-      var l = DEMO[demoIdx % DEMO.length];
-      return { lead: l, queue: DEMO.slice(1).map(function (d) {
-                 return { company: d.co, state: d.state, rank: d.rank }; }),
-               stats: { dials_today: demoDials, cap: 150, connects_today: 0,
-                        interested_today: 0, callbacks_due: 0, queue: DEMO.length },
-               caller_id: "+1 917 555 0142" };
-    }
-    if (path === "/api/disposition") { demoIdx++; demoDials++; }
-    if (path === "/api/skip") demoIdx++;
-    return { ok: true, sim: true, voicemails: [] };
-  }
-
-  /* ------------------------------------------------------------ render -- */
-
-  function renderStats(s) {
-    if (!s) return;
-    stats = s;
-    $("s-dials").textContent = s.dials_today + " / " + s.cap;
-    $("s-dials").className = s.dials_today >= s.cap ? "over" : "";
-    $("s-conn").textContent = s.connects_today;
-    $("s-int").textContent = s.interested_today;
-    $("s-cb").textContent = s.callbacks_due;
-    $("s-queue").textContent = s.queue;
-    $("m-done").textContent = s.dials_today;
-    $("m-goal").textContent = GOAL;
-    $("m-bar").style.width = Math.min(100, s.dials_today / GOAL * 100) + "%";
-    if (s.dials_today >= s.cap) {
-      $("banner").innerHTML = "<b>Daily cap reached on this number.</b> The queue is closed " +
-        "until tomorrow — pushing past " + s.cap + " dials/day is how numbers get labelled as spam.";
-    }
-  }
-
-  function renderQueue(rows) {
-    $("next").innerHTML = (rows || []).map(function (l) {
-      return '<div class="row"><span class="rk">' + l.rank + '</span>' +
-             '<span class="co">' + esc(l.company) + '</span>' +
-             '<span class="st">' + esc(l.state) + "</span></div>";
-    }).join("") ||
-      '<div class="row"><span class="co" style="color:var(--mid);font-weight:400">Queue empty</span></div>';
-  }
-
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  }
-
-  function renderLead() {
-    var l = cur;
-    $("c-note").hidden = true;
-    if (!l) return;
-    $("c-rank").textContent = "Rank " + l.rank +
-      (l.attempts ? " · attempt " + (l.attempts + 1) : " · fresh") +
-      (l.callback_at ? " · CALLBACK" : "");
-    $("c-company").textContent = l.co || "Unknown company";
-    $("c-person").innerHTML = "<b>" + esc((l.first || "") + " " + (l.last || "")) + "</b>" +
-      (l.title ? " · " + esc(l.title) : "");
-    $("c-phone").innerHTML = fmtPhone(l.phone) +
-      "<small>" + esc(l.city ? l.city + ", " + l.state : l.state || "") +
-      (l.local_time && l.local_time !== "—" ? " · " + l.local_time + " local" : "") + "</small>";
-
-    var chips = [];
-    var tt = followers(l.tt);
-    if (tt) chips.push('<span class="chip hot"><b>' + fmtNum(tt) + "</b> TikTok followers</span>");
-    if (l.size) chips.push('<span class="chip"><b>' + esc(l.size) + "</b> employees</span>");
-    if (l.last_disposition)
-      chips.push('<span class="chip past">last: <b>' + esc(l.last_disposition) + "</b></span>");
-    $("c-chips").innerHTML = chips.join("");
-
-    var lastNote = (l.history || []).filter(function (h) { return h.notes; })[0];
-    if (lastNote) {
-      $("c-note").hidden = false;
-      $("c-note").innerHTML = "&ldquo;" + esc(lastNote.notes) + "&rdquo; — " +
-        esc(lastNote.agent || "agent") + ", " + esc((lastNote.at || "").slice(0, 10));
-    }
-
-    $("c-script").innerHTML =
-      '<span class="must">"This call is being recorded for quality and training purposes."</span> ' +
-      "Hi " + esc(l.first || "there") + ", it's Sayim — I'll be quick. I saw <b>" + esc(l.co) + "</b>" +
-      (tt ? " has " + fmtNum(tt) + " followers on TikTok but isn't running Shop against them yet."
-          : " isn't running TikTok Shop yet.") +
-      " That's what we do, end to end, for brands your size. Worth two minutes?";
-  }
-
-  function renderEmpty(reason) {
-    $("c-rank").textContent = "—";
-    $("c-company").textContent = "No lead to dial";
-    $("c-person").textContent = reason || "";
-    $("c-phone").textContent = "—";
-    $("c-chips").innerHTML = "";
-    $("c-note").hidden = true;
-    $("c-script").textContent = "The queue refreshes on its own — retries and callbacks pull in as they come due.";
-  }
-
-  function setState(s) {
-    state = s;
-    var ready = (s === "READY"), inCall = (s === "LIVE");
-    var dispo = (s === "DISPO" || s === "DISPO_CB");
-    $("b-dial").disabled = !ready;
-    $("b-hangup").disabled = !inCall && s !== "DIALING";
-    $("b-skip").disabled = !ready;
-    $("b-mute").disabled = !inCall;
-    $("b-vmdrop").disabled = !inCall || !live || inbound;
-    $("act-main").hidden = dispo;
-    $("act-dispo").hidden = !dispo;
-    $("cb-row").hidden = s !== "DISPO_CB";
-    $("c-timer").className = "timer num" + (inCall ? "" : " hide");
-    $("c-hint").hidden = !inCall || !live;
-    if (!inCall) { $("b-mute").classList.remove("on"); $("b-mute").childNodes[0].textContent = "Mute"; }
-  }
-
-  function renderDispos() {
-    $("dispo-grid").innerHTML = DISPOS.map(function (d, n) {
-      return '<button data-k="' + d.key + '"' + (d.warn ? ' class="warn"' : "") + ">" +
-             "<kbd>" + (n + 1) + "</kbd>" + d.label + "</button>";
-    }).join("");
-  }
-
-  /* ------------------------------------------------------------- queue -- */
-
-  function nextLead() {
-    api("/api/next?agent=" + AGENT).then(function (d) {
-      if (d.caller_id) { CID = d.caller_id; $("s-cid").textContent = d.caller_id; }
-      renderStats(d.stats);
-      renderQueue(d.queue);
-      cur = d.lead || null;
-      if (cur) {
-        setState("READY");
-        lamp("ready", "Ready");
-        renderLead();
-      } else {
-        setState("IDLE");
-        lamp("", "Idle");
-        renderEmpty(d.reason);
-        say(esc(d.reason || "Queue empty"));
-        setTimeout(function () { if (state === "IDLE") nextLead(); }, 120000);
-      }
-    }).catch(function () {
-      if (!OFFLINE) {
-        OFFLINE = true;
-        $("banner").innerHTML = "<b>Preview mode.</b> No server — showing sample leads, nothing is saved.";
-        say("Server unavailable — preview mode");
-        nextLead();
-      }
-    });
-  }
-
-  /* ----------------------------------------------------------- calling -- */
-
-  function attachTwilio(token) {
-    var s = document.createElement("script");
-    s.src = "/twilio.min.js";        // vendored @twilio/voice-sdk 2.11.1
-    s.onload = function () {
-      device = new Twilio.Device(token, { logLevel: "error" });
-      device.on("error", function (e) { say("Twilio: " + esc(e.message)); });
-      device.on("tokenWillExpire", function () {
-        api("/api/token?agent=" + AGENT).then(function (d) { if (d.token) device.updateToken(d.token); });
-      });
-      device.on("incoming", onIncoming);
-      device.register();
-      live = true;
-      say("Twilio connected — <b>real calls enabled</b>, inbound ringing here");
-    };
-    s.onerror = function () { say("Twilio SDK failed to load — simulator mode"); };
-    document.head.appendChild(s);
-  }
-
-  function wireCall(call) {
-    activeCall = call;
-    call.on("ringing", function () { if (state === "DIALING") lamp("busy", "Ringing"); });
-    call.on("accept", function () { if (state === "DIALING" || inbound) onAnswered(); });
-    call.on("disconnect", function () {
-      activeCall = null;
-      if (state === "LIVE") onEnded("HANGUP");
-      else if (state === "DIALING") onEnded("NO_ANSWER");
-    });
-    call.on("cancel", function () {
-      activeCall = null;
-      if (state === "DIALING") onEnded("NO_ANSWER");
-    });
-    call.on("error", function (e) {
-      activeCall = null;
-      say("Call error: " + esc(e.message));
-      if (state === "LIVE" || state === "DIALING") onEnded("NO_ANSWER");
-    });
-  }
-
-  function dialTwilio(l) {
-    device.connect({
-      params: { To: l.phone, CallerId: CID.replace(/[^+\d]/g, "") }
-    }).then(wireCall).catch(function (e) {
-      say("Could not start call: " + esc(e.message));
-      setState("READY");
-      lamp("ready", "Ready");
-    });
-  }
-
-  function dial() {
-    if (state !== "READY" || !cur) return;
-    inbound = false;
-    sec = 0;
-    setState("DIALING");
-    lamp("busy", "Dialing");
-    $("c-timer").textContent = "00:00";
-    say("Dialing <b>" + esc(cur.co) + "</b>");
-
-    if (live && device) { dialTwilio(cur); return; }
-
-    setTimeout(function () { if (state === "DIALING") lamp("busy", "Ringing"); }, 600);
-    setTimeout(function () {
-      if (state !== "DIALING") return;
-      rng = (rng * 7 + 3) % 10;            // deterministic ~30% contact rate
-      if (rng < 3) onAnswered(); else onEnded(rng < 6 ? "VOICEMAIL" : "NO_ANSWER");
-    }, 2100);
-  }
-
-  function hangup() {
-    if (activeCall) activeCall.disconnect();
-    else onEnded("HANGUP");
-  }
-
-  function onAnswered() {
-    setState("LIVE");
-    lamp("live", "On a call");
-    say("Connected — <b>" + esc(cur ? cur.co : "caller") + "</b>");
-    if (tick) clearInterval(tick);
-    sec = 0;
-    tick = setInterval(function () {
-      sec++; $("c-timer").textContent = fmtTime(sec);
-    }, 1000);
-  }
-
-  function onEnded(reason) {
-    if (tick) { clearInterval(tick); tick = null; }
-    setState("DISPO");
-    lamp("dispo", reason === "VOICEMAIL" ? "Voicemail" : reason === "NO_ANSWER" ? "No answer" : "Wrap up");
-    if (reason === "HANGUP") say("Call ended — " + fmtTime(sec));
-    else say(reason === "VOICEMAIL" ? "Answering machine" : "No answer");
-  }
-
-  function toggleMute() {
-    if (!activeCall) return;
-    var muted = !activeCall.isMuted();
-    activeCall.mute(muted);
-    $("b-mute").classList.toggle("on", muted);
-    $("b-mute").childNodes[0].textContent = muted ? "Unmute" : "Mute";
-  }
-
-  function vmDrop() {
-    if (!activeCall || !cur) return;
-    var sid = activeCall.parameters && activeCall.parameters.CallSid;
-    if (!sid) { say("No call id yet — try again in a second"); return; }
-    say("Dropping voicemail message…");
-    api("/api/vmdrop", { call_sid: sid }).then(function (d) {
-      if (d.ok || d.sim) {
-        if (activeCall) activeCall.disconnect();
-        submitDispo("VOICEMAIL", null);      // auto-wrap: message is playing
-      } else {
-        say("VM drop failed: " + esc(d.error || "unknown"));
-      }
-    });
-  }
-
-  /* -------------------------------------------------------- wrap-up ----- */
-
-  function pickDispo(key) {
-    if (state !== "DISPO" && state !== "DISPO_CB") return;
-    if (key === "CALLBACK") { setState("DISPO_CB"); return; }
-    submitDispo(key, null);
-  }
-
-  function cbTime(kind) {
-    var t = new Date();
-    if (kind === "tomorrow") {
-      // 10:00 lead-local tomorrow, expressed in UTC.
-      var off = (cur && typeof cur.tz_offset === "number") ? cur.tz_offset : -5;
-      t = new Date(Date.now() + 86400000);
-      t.setUTCHours(Math.round(10 - off) % 24, 0, 0, 0);
-    } else {
-      t = new Date(Date.now() + Number(kind) * 3600000);
-    }
-    return t.toISOString().slice(0, 19).replace("T", " ");
-  }
-
-  function submitDispo(key, callbackAt) {
-    if (!cur) { setState("READY"); return; }
-    var payload = {
-      agent: AGENT,
-      phone: cur.phone,
-      company: cur.co,
-      disposition: key,
-      notes: $("notes").value.trim(),
-      duration: sec
-    };
-    if (callbackAt) payload.callback_at = callbackAt;
-    say("<b>" + key.replace("_", " ").toLowerCase() + "</b> — " + esc(cur.co) +
-        (callbackAt ? " · callback " + callbackAt.slice(0, 16) + " UTC" : ""));
-    if (key === "DNC") say("Added to DNC — blocked from every future list");
-    api("/api/disposition", payload).then(function (d) {
-      renderStats(d.stats);
-    });
-    $("notes").value = "";
-    cur = null;
-    inbound = false;
-    setState("IDLE");
-    nextLead();
-  }
-
-  function skip() {
-    if (state !== "READY" || !cur) return;
-    say("Skipped " + esc(cur.co));
-    api("/api/skip", { phone: cur.phone, agent: AGENT });
-    cur = null;
-    nextLead();
-  }
-
-  /* -------------------------------------------------------- inbound ----- */
-
-  function onIncoming(call) {
-    if (state === "LIVE" || state === "DIALING") { call.reject(); return; }
-    incomingCall = call;
-    var from = (call.parameters && call.parameters.From) || "";
-    $("in-co").textContent = fmtPhone(from) || "Unknown caller";
-    $("in-who").textContent = "Looking up…";
-    $("incoming").hidden = false;
-    say("Incoming call from <b>" + esc(fmtPhone(from)) + "</b>");
-    api("/api/lookup?phone=" + encodeURIComponent(from)).then(function (d) {
-      if (d.lead) {
-        $("in-co").textContent = d.lead.co || fmtPhone(from);
-        $("in-who").textContent = ((d.lead.first || "") + " " + (d.lead.last || "")).trim() +
-          (d.lead.title ? " · " + d.lead.title : "") +
-          (d.lead.last_disposition ? " · last: " + d.lead.last_disposition : "");
-        incomingCall._lead = d.lead;
-      } else {
-        $("in-who").textContent = "Not in the lead list.";
-      }
-    });
-    call.on("cancel", function () { $("incoming").hidden = true; incomingCall = null; });
-    call.on("disconnect", function () { $("incoming").hidden = true; });
-  }
-
-  function acceptIncoming() {
-    if (!incomingCall) return;
-    $("incoming").hidden = true;
-    var from = (incomingCall.parameters && incomingCall.parameters.From) || "";
-    cur = incomingCall._lead || {
-      phone: from, co: "Inbound: " + fmtPhone(from), first: "", last: "",
-      title: "", city: "", state: "", tt: "", size: "", rank: 0,
-      attempts: 0, history: [], local_time: "—"
-    };
-    inbound = true;
-    renderLead();
-    $("c-script").innerHTML = "<b>Return call.</b> They saw your missed call — pick up where the voicemail left off.";
-    incomingCall.accept();
-    wireCall(incomingCall);
-    incomingCall = null;
-    onAnswered();
-  }
-
-  function declineIncoming() {
-    if (incomingCall) incomingCall.reject();
-    $("incoming").hidden = true;
-    incomingCall = null;
-  }
-
-  /* ------------------------------------------------------- voicemails --- */
-
-  function refreshVoicemails() {
-    api("/api/voicemails").then(function (d) {
-      var items = d.voicemails || [];
-      $("vmlist").innerHTML = items.length ? items.map(function (v) {
-        return '<div class="row"><button data-vm="' + esc(v.sid) + '">▶</button>' +
-          '<span class="who"><b>' + esc(v.company || fmtPhone(v.from)) + "</b>" +
-          (v.company ? " · " + esc(fmtPhone(v.from)) : "") + "</span>" +
-          '<span class="dur">' + v.duration + 's</span></div>';
-      }).join("") : '<span class="none">None yet.</span>';
-    });
-  }
-
-  /* ------------------------------------------------------------ upload -- */
-
-  function uploadList(file) {
-    say("Uploading <b>" + esc(file.name) + "</b> — running list prep…");
-    lamp("busy", "Prepping list");
-    $("b-load").disabled = true;
-    fetch("/api/upload", {
-      method: "POST", headers: { "X-Filename": file.name }, body: file
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d.ok) {
-          say("List prepped — <b>" + d.added + "</b> new leads, " + d.refreshed + " already known");
-          renderStats(d.stats);
-          if (state === "IDLE") nextLead();
-        } else {
-          say("Prep failed: <b>" + esc(d.error || "unknown error") + "</b>" +
-              (d.log ? "<br><small>" + esc(d.log.split("\n").pop()) + "</small>" : ""));
-        }
-      })
-      .catch(function (e) { say("Upload failed: " + esc(e.message)); })
-      .finally(function () {
-        $("b-load").disabled = false;
-        if (state === "READY") lamp("ready", "Ready");
-        else if (state === "IDLE") lamp("", "Idle");
-      });
-  }
-
-  /* -------------------------------------------------------------- boot -- */
-
-  function boot() {
-    renderDispos();
-    setState("IDLE");
-    renderEmpty("Connecting…");
-    say("Signed in as " + AGENT);
-    $("banner").innerHTML = "<b>Connected.</b> Queue, caps, retries and callbacks are enforced server-side.";
-
-    api("/api/token?agent=" + AGENT).then(function (d) {
-      if (d && d.token) attachTwilio(d.token);
-      else if (!OFFLINE) say("No Twilio credentials — simulator mode");
-    }).catch(function () {});
-
-    nextLead();
-    refreshVoicemails();
-    setInterval(refreshVoicemails, 300000);
-  }
-
-  $("b-dial").addEventListener("click", dial);
-  $("b-hangup").addEventListener("click", hangup);
-  $("b-mute").addEventListener("click", toggleMute);
-  $("b-vmdrop").addEventListener("click", vmDrop);
-  $("b-skip").addEventListener("click", skip);
-  $("b-accept").addEventListener("click", acceptIncoming);
-  $("b-decline").addEventListener("click", declineIncoming);
-  $("b-load").addEventListener("click", function () {
-    if (state === "LIVE" || state === "DIALING") { say("Finish the call before loading a new list"); return; }
-    $("f-list").click();
-  });
-  $("f-list").addEventListener("change", function () {
-    if (this.files[0]) uploadList(this.files[0]);
-    this.value = "";
-  });
-  $("dispo-grid").addEventListener("click", function (e) {
-    var b = e.target.closest("button[data-k]");
-    if (b) pickDispo(b.getAttribute("data-k"));
-  });
-  $("cb-row").addEventListener("click", function (e) {
-    var b = e.target.closest("button[data-cb]");
-    if (b) submitDispo("CALLBACK", cbTime(b.getAttribute("data-cb")));
-  });
-  $("cb-custom-go").addEventListener("click", function () {
-    var v = $("cb-custom").value;
-    if (!v) return;
-    submitDispo("CALLBACK", new Date(v).toISOString().slice(0, 19).replace("T", " "));
-  });
-  $("vmlist").addEventListener("click", function (e) {
-    var b = e.target.closest("button[data-vm]");
-    if (!b) return;
-    var a = $("vm-audio");
-    a.style.display = "block";
-    a.src = "/api/voicemail/" + b.getAttribute("data-vm") + ".mp3";
-    a.play();
-  });
-  window.addEventListener("beforeunload", function () {
-    if (cur && state === "READY" && !OFFLINE) {
-      navigator.sendBeacon("/api/release", JSON.stringify({ phone: cur.phone }));
-    }
-  });
-
-  document.addEventListener("keydown", function (e) {
-    if (e.target.matches("input, textarea")) return;
-    if (e.code === "Space" || e.key === "Enter") {
-      e.preventDefault();
-      if (state === "READY") dial();
-      else if (state === "LIVE" || state === "DIALING") hangup();
-      return;
-    }
-    if (state === "LIVE") {
-      if (/^[0-9*#]$/.test(e.key) && activeCall) { activeCall.sendDigits(e.key); return; }
-      if (e.key === "m" || e.key === "M") { toggleMute(); return; }
-      if (e.key === "v" || e.key === "V") { vmDrop(); return; }
-    }
-    if (state === "DISPO" && e.key >= "1" && e.key <= String(DISPOS.length)) {
-      e.preventDefault();
-      pickDispo(DISPOS[+e.key - 1].key);
-      return;
-    }
-    if (state === "DISPO_CB") {
-      if (e.key === "1") submitDispo("CALLBACK", cbTime("1"));
-      else if (e.key === "2") submitDispo("CALLBACK", cbTime("3"));
-      else if (e.key === "3") submitDispo("CALLBACK", cbTime("tomorrow"));
-      else if (e.key === "Escape") setState("DISPO");
-      return;
-    }
-    if ((e.key === "s" || e.key === "S") && state === "READY") skip();
-  });
-
-  boot();
-})();
-</script>
+<script src="app.js"></script>
+</body>
+</html>

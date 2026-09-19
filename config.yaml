@@ -82,8 +82,11 @@ suppression:
   engagement_file: null
 
 compliance:
-  # Played at the top of EVERY call. One policy, always compliant, costs 3 seconds.
-  # Avoids per-state all-party-consent analysis (CA/FL/IL/MD/MA/MI/MT/NV/NH/OR/PA/WA/CT/DE).
+  # VICIdial stack: the mandatory first line of every campaign script.
+  # Browser dialer: never played automatically. The agent speaks from the first
+  # second. The line appears as a "Say first" prompt ONLY while dialer.recording
+  # is true, because recording without it breaks all-party-consent law in
+  # CA/FL/IL/MD/MA/MI/MT/NV/NH/OR/PA/WA/CT/DE.
   recording_disclosure: >-
     This call is being recorded for quality and training purposes.
   # CRTC requires clear identification at call start for Canadian numbers.
@@ -91,3 +94,80 @@ compliance:
   opt_out_honored_within_days: 10    # FCC revocation rule: 10 business days (US)
   ca_opt_out_honored_within_days: 14 # CRTC internal DNC
   log_retention_years: 5
+
+# ---------------------------------------------------------------------------
+# Browser dialer (dialer/serve.py + dialer/app.js). Everything below is read
+# at server start and handed to the agent screen via /api/config — edit here,
+# restart, no code changes. Omit a key to keep the built-in default.
+# ---------------------------------------------------------------------------
+dialer:
+  daily_goal: 100            # the "today" progress bar; the hard cap is numbers.max_dials_per_number_per_day
+  autodial_delay_sec: 3      # power session: pause between wrap-up and the next dial
+  recording: false           # set true ONLY once the Twilio /dial Function records — drives the REC badge
+                             # and the "Say first" recording-disclosure prompt above the opener
+
+  # Seats offered by the "Who's dialing?" picker. id is the Twilio client
+  # identity (inbound rings agent1); name is what the scripts say.
+  agents:
+    - {id: agent1, name: Sayim}
+
+  pause_reasons: [Break, Lunch, Meeting, Admin / follow-ups, Coaching]
+
+  # kind:    final    -> lead is done
+  #          retry    -> back in the queue after retry.min_hours_between, up to retry.max_attempts
+  #          callback -> asks for a time, jumps the queue when due
+  #          dnc      -> confirms, then blocks the number for good
+  # connect: a human picked up (feeds connect rate + talk time)
+  # tone:    good | info | plain | danger  (button styling only)
+  # INTERESTED, CALLBACK and DNC must exist; keys 1-9 then 0 follow this order.
+  outcomes:
+    - {key: INTERESTED,   label: Interested,     kind: final,    connect: true,  tone: good}
+    - {key: CALLBACK,     label: Callback,       kind: callback, connect: true,  tone: info}
+    - {key: NOT_INT,      label: Not interested, kind: final,    connect: true,  tone: plain}
+    - {key: GATEKEEPER,   label: Gatekeeper,     kind: retry,    connect: true,  tone: plain}
+    - {key: VOICEMAIL,    label: Voicemail,      kind: retry,    connect: false, tone: plain}
+    - {key: NO_ANSWER,    label: No answer,      kind: retry,    connect: false, tone: plain}
+    - {key: BUSY,         label: Busy,           kind: retry,    connect: false, tone: plain}
+    - {key: WRONG_NUMBER, label: Wrong number,   kind: final,    connect: true,  tone: plain}
+    - {key: DISCONNECTED, label: Disconnected,   kind: final,    connect: false, tone: plain}
+    - {key: DNC,          label: Do not call,    kind: dnc,      connect: true,  tone: danger}
+
+  # Tokens: {first} {last} {company} {title} {followers} {agent} {city} {state}
+  #   {?followers}...{/followers}  renders only when the lead has that value
+  #   {!followers}...{/followers}  renders only when it does not
+  #   **bold** is supported. compliance.recording_disclosure is shown above
+  #   the opener only while recording is true — it is not part of these strings.
+  scripts:
+    opener: >-
+      Hi {first}, it's {agent} — I'll be quick. I saw **{company}**{?followers}
+      has {followers} followers on TikTok but isn't running Shop against them
+      yet.{/followers}{!followers} isn't running TikTok Shop yet.{/followers}
+      That's what we do, end to end, for brands your size. Worth two minutes?
+    voicemail: >-
+      Hi {first}, this is {agent}. I was calling about **{company}**'s TikTok
+      Shop{?followers} — you've got {followers} followers and no Shop running
+      against them{/followers}. I'll try you again, or you can reach me back on
+      this number. Thanks!
+    gatekeeper: >-
+      Hi, it's {agent} — could you put me through to {first}? It's about
+      **{company}**'s TikTok channel. If they're out: when's a good time to
+      catch them, and is there a direct line?
+    objections:
+      - q: We already have an agency
+        a: >-
+          Makes sense. Are they running TikTok Shop specifically, or mostly paid
+          and organic? Most agencies we meet don't touch Shop — we sit alongside them.
+      - q: Not interested
+        a: >-
+          Fair enough. Quick one before I go — is it that Shop isn't a priority
+          this year, or that you've looked at it and it didn't stack up?
+      - q: Send me an email
+        a: >-
+          Happy to. So I send the right thing — is the bigger question whether
+          Shop would work for your products, or who would run it day to day?
+      - q: How much does it cost?
+        a: >-
+          Depends on catalogue size — most brands your size start on a
+          performance-weighted retainer. Worth fifteen minutes to scope it properly?
+      - q: Bad time
+        a: No problem — when's better, later today or tomorrow morning? I'll put it in.

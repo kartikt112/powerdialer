@@ -11,3 +11,6 @@ dnc.csv
 __pycache__/
 *.pyc
 .DS_Store
+
+# Seeded demo database for local UI previews
+.preview/

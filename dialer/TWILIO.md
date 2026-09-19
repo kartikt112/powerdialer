@@ -30,7 +30,7 @@
 > **Inbound**: the number's voice URL is the `/inbound` Function — return
 > calls ring the `agent1` browser client (screen-pop from the DB via
 > `/api/lookup`); after 15 s unanswered they get the `VM_GREETING` and
-> record a voicemail, which shows up in the UI's Voicemails rail
+> record a voicemail, which shows up in the UI's Inbox tab, next to missed calls
 > (played through the server proxy `/api/voicemail/<sid>.mp3`).
 >
 > **VM drop**: the Drop-VM button redirects the callee leg to a spoken
@@ -115,11 +115,12 @@ browser asks for microphone access on the first dial — allow it.
 
 | Twilio event | UI |
 |---|---|
+| session countdown hits 0, or `space` | `connect()` issued |
 | `connect()` issued | DIALING, lamp "Dialing" |
 | `ringing` | lamp "Ringing" |
 | `accept` (human answered) | LIVE, timer starts, connect counted |
-| `disconnect` while LIVE | wrap-up → disposition grid |
-| `disconnect`/`cancel` while DIALING | disposition grid (defaults read as no-answer) |
+| `disconnect` while LIVE | wrap-up → outcome grid |
+| `disconnect`/`cancel` while DIALING | outcome grid, *No answer* suggested on `enter` |
 | Hang up / space while DIALING | abandons the ringing call |
 
 Dispositions still post to `/api/disposition` and land in `called_log.csv`
@@ -134,5 +135,9 @@ and `dnc.csv` — nothing about the suppression loop changed.
   monitor spam labelling yourself (Free Caller Registry, Hiya) and stay
   under the 150 dials/day/number cap the UI already enforces.
 - Recording: add `record: "record-from-answer-dual"` to the `dial()` options
-  in the Function if you want it — the script's recording disclosure line is
-  already mandatory in the UI.
+  in the Function if you want it, then set `dialer.recording: true` in
+  `config.yaml` so the agent sees a REC badge on live calls and a
+  "Say first" recording-disclosure prompt above the opener. Nothing is ever
+  played to the callee automatically: with `answerOnBridge` the agent is live
+  from the moment the lead picks up. The one automated voice you may hear is
+  Twilio's own trial-account notice, which goes away when the account is upgraded.

@@ -31,10 +31,34 @@ python3.12 telnyx_lookup.py --input out/x.csv --estimate-only
 
 # Browser dialer on the newest prepped list (simulator without credentials;
 # real calls with the TWILIO_* env vars set — see dialer/TWILIO.md).
-# The UI's "Load list…" button also accepts a raw .xlsx/.csv and runs
+# The agent menu's "Load list…" item also accepts a raw .xlsx/.csv and runs
 # this same prep pipeline server-side — no CLI needed.
 python3.12 dialer/serve.py --list 101
 ```
+
+## Agent cockpit
+
+`dialer/serve.py` serves a three-pane agent screen.
+
+- **Power session** — *Start session* (or `p`) dials each lead on its own a
+  few seconds after it loads. `esc` holds one lead, `space` dials now, *Pause*
+  takes a reason and waits for the current call to be wrapped up. Hand-picked
+  leads (queue click, callback, inbox, typed number) never auto-dial.
+- **Left rail** — Queue with search across every list, Callbacks (call now /
+  reschedule / remove), today's Calls with an outcome breakdown, and an Inbox
+  of missed inbound calls and voicemails with one-click call back.
+- **Lead** — local time with a calling-hours warning, research links, the last
+  note, and a notes box that is live during the call and autosaves a draft.
+- **Wrap-up** — ten outcomes on `1`-`9` `0`, a suggested outcome on `enter`
+  after a no-answer, a confirm step before do-not-call, and `z` to undo the
+  last outcome for a few seconds.
+- **Right rail** — Opener / Voicemail / Gatekeeper / Objections scripts and
+  the lead's full call history. The recording-disclosure prompt shows only
+  while `dialer.recording` is true; nothing is ever played to the callee.
+
+Outcomes, scripts, pause reasons, agent seats, the daily goal and the
+auto-dial delay all live under `dialer:` in `config.yaml`. Press `?` in the
+app for every shortcut.
 
 ## Pipeline
 
@@ -60,7 +84,9 @@ Excel/CSV
 | `telnyx_lookup.py` | Number validation + line-type tagging, cached |
 | `dialer/serve.py` | Dialer server — queue API, Twilio tokens/REST, uploads |
 | `dialer/db.py` | SQLite state: checkout, retries, callbacks, caps, DNC, notes |
-| `dialer/index.html` | Agent screen — calling, wrap-up, callbacks, voicemails, inbound |
+| `dialer/index.html` | Agent cockpit markup — three panes: rail (queue, callbacks, calls, inbox), lead, script + history |
+| `dialer/app.js` | Agent cockpit logic — power session (auto-dial), call controls, notes, wrap-up + undo, shortcuts |
+| `dialer/app.css` | Design system — tokens, light/dark themes, call-state colour, responsive layout |
 | `dialer/TWILIO.md` | Twilio setup + deployed architecture notes |
 | `config.yaml` | Calling hours, retry policy, scoring weights, compliance settings |
 | `dnc.csv` | Internal do-not-call. Export from VICIdial weekly. |
