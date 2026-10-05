@@ -116,7 +116,15 @@ compliance:
   # is true, because recording without it breaks all-party-consent law in
   # CA/FL/IL/MD/MA/MI/MT/NV/NH/OR/PA/WA/CT/DE.
   recording_disclosure: >-
-    This call is being recorded for quality and training purposes.
+    Quick heads up, this call is recorded.
+  # Every call is recorded from pickup with no disclosure (your choice,
+  # 5 Oct 2026). These states require everyone on the call to consent, so a
+  # recording there without telling them can be sued over (California: up to
+  # $5,000 a call). Set hold_recording_in_all_party_states: true to make the
+  # cockpit hold the recording for leads in these states (or with no state on
+  # file) until you've said the line above and pressed R.
+  all_party_consent_states: [CA, CT, DE, FL, IL, MD, MA, MI, MT, NV, NH, OR, PA, WA]
+  hold_recording_in_all_party_states: false
   # CRTC requires clear identification at call start for Canadian numbers.
   identify_company_on_connect: true
   opt_out_honored_within_days: 10    # FCC revocation rule: 10 business days (US)
@@ -144,8 +152,8 @@ compliance:
 dialer:
   daily_goal: 100            # the "today" progress bar; the hard cap is numbers.max_dials_per_number_per_day
   autodial_delay_sec: 3      # power session: pause between wrap-up and the next dial
-  recording: false           # set true ONLY once the Twilio /dial Function records: drives the REC badge
-                             # and the "Say first" recording-disclosure prompt above the opener
+  recording: true            # every call is recorded from pickup through Twilio's API (two channels:
+                             # you and them). See compliance.hold_recording_in_all_party_states.
 
   # Seats offered by the "Who's dialing?" picker. id is the carrier client
   # identity (set AGENT_CLIENT on the Twilio /inbound Function to match so
@@ -170,6 +178,9 @@ dialer:
   session:
     target_dials: 100
     target_minutes: 90
+  # Dials a day the target strip aims for, when a campaign doesn't set its own
+  # (each campaign can, under Campaigns > Edit).
+  daily_target: 150
   default_script_version: v1
 
   # The day that stats, caps and "same day" rules run on. You dial US business
@@ -335,7 +346,7 @@ dialer:
             title: Ask
             say:
               - "So {dm_first}, if I told you I fix exactly that, and I've done it for {?process}{process} {/process}shops in your spot, would that be something you want to explore?"
-              - "Let's pretend I can take {?pain}{pain}{/pain}{!pain}that{/pain} off your plate and the package is back the next business day, engineer-checked. Any reason you wouldn't talk to me for fifteen minutes?"
+              - "Let's pretend I can take {?pain}{pain}{/pain}{!pain}that{/pain} off your plate: your drawing goes in, the print is ballooned in seconds, and the whole PPAP comes back in minutes, in your customer's template, with every characteristic checked by our engineer before it's released. Any reason you wouldn't take fifteen minutes to see it on one of your own drawings?"
             cue: "No prices on this call. The only goal is the fifteen minutes."
           book:
             title: Book
@@ -424,7 +435,7 @@ dialer:
       - key: what_do_you_do
         title: What do you do
         tag: WHAT_DO_YOU_DO
-        anchor: "AI builds your PPAP package from the drawing in under an hour, an engineer checks it, back next business day in your customer's template."
+        anchor: "You send the drawing and your routing, and the full PPAP comes back in minutes in your customer's template. Our engineer checks every characteristic before it's released, and the first one is a free trial."
         disrupt: "(one line only, then straight to a question)"
         question: "How long does one take your team today?"
       - key: calls_all_the_time
@@ -461,7 +472,7 @@ dialer:
 
           Thanks for the couple of minutes today. You said: {?pain}"{pain}"{/pain}{!pain}the PPAP paperwork eats more days than it should{/pain}.
 
-          Here is the picture I could not paint on the phone. Your drawing goes in. Under an hour later there is a ballooned print, a control plan, a PFMEA draft, the dimensional layout and the PSW, in your customer's own template. An engineer checks it and it is back with you the next business day.
+          Here is the picture I could not paint on the phone. Your drawing goes in and the print is ballooned in seconds. Minutes later there is a control plan, a PFMEA draft, the dimensional layout and the PSW, in your customer's own template. Our engineer checks every characteristic before anything is released, and the first package is a free trial on one of your own drawings.
 
           The fastest way to see it is on the call. Fifteen minutes, your drawing or one of mine: {calendly}
 

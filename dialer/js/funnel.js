@@ -3,10 +3,11 @@
    lays them out and colours each rate against its target. */
 import { $, icon, esc, fmtPct, fmtNum, fmtTalk } from "./util.js";
 import { S, on, actions } from "./state.js";
-import { api, withAgent } from "./api.js";
+import { api, withAgent, withCampaign } from "./api.js";
 import { openModal, closeX } from "./ui.js";
 
 let range = "today";
+const RANGE_LABEL = { today: "Today", week: "This week", month: "This month", all: "All time" };
 let last = null;
 
 function grade(value, target, sample) {
@@ -91,8 +92,8 @@ function sheetHTML(s) {
   const t = T();
   return '<div class="dh"><div><h2>Funnel</h2><p class="sub">Sales calls done and sales are credited to the date of the dial that booked them, not the date of the meeting. ' +
     "Days run on " + esc(S.cfg.stats_timezone || "US Eastern") + " time.</p></div>" + closeX() + "</div>" +
-    '<div class="seg" id="sh-range">' + ["today", "week", "all"].map((r) =>
-      '<button data-r="' + r + '" aria-selected="' + (r === s.range) + '">' + { today: "Today", week: "This week", all: "All time" }[r] + "</button>").join("") + "</div>" +
+    '<div class="seg" id="sh-range">' + ["today", "week", "month", "all"].map((r) =>
+      '<button data-r="' + r + '" aria-selected="' + (r === s.range) + '">' + RANGE_LABEL[r] + "</button>").join("") + "</div>" +
     '<div class="stat-grid"><div class="stat-scroll"><table class="stat-table"><thead><tr><th>Rate</th><th>Now</th><th>Target</th></tr></thead><tbody>' + rateRows +
     '</tbody></table><p class="muted" style="margin-top:10px;font-size:12px">ABR team benchmark ' + fmtPct(t.abr_benchmark, 1) + ". Rates stay grey until " + (t.min_sample || 10) +
     " in the denominator. Pickup rate under " + fmtPct(t.pickup, 0) + " across 50+ dials on one caller ID usually means that number is spam-labelled.</p></div>" +
@@ -102,7 +103,7 @@ function sheetHTML(s) {
     (scripts || '<tr><td colspan="8">No calls in this range yet.</td></tr>') + "</tbody></table></div></div>" +
     ((s.objections || []).length ? '<p class="hint">Top objections today: ' + s.objections.map((o) => esc(o.label) + " (" + o.count + ")").join(", ") + ".</p>" : "") +
     '<div class="acts" style="justify-content:flex-start;align-items:baseline"><span class="hint">Imperium tracker CSV</span>' +
-    ["today", "week", "all"].map((r) => '<a class="btn sm" style="text-decoration:none" href="/api/funnel.csv?range=' + r + '" download>' + { today: "Today", week: "This week", all: "All time" }[r] + "</a>").join("") + "</div>";
+    ["today", "week", "month", "all"].map((r) => '<a class="btn sm" style="text-decoration:none" href="' + withCampaign("/api/funnel.csv?range=" + r) + '" download>' + RANGE_LABEL[r] + "</a>").join("") + "</div>";
 }
 
 export function statsSheet(which) {

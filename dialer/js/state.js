@@ -25,6 +25,8 @@ export const S = {
     speaker: store.get("pd_speaker", ""),
     notify: store.get("pd_notify", "0") === "1"
   },
+  campaign: Number(store.get("pd_campaign", "")) || null,   // the campaign being called; null = all
+  campaigns: [],
   data: { queue: [], callbacks: [], calls: [], missed: [], voicemails: [] }
 };
 
@@ -39,5 +41,10 @@ export function outcome(key) {
   for (const o of list) if (o.key === key) return o;
   return { key, label: String(key || "").replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase()),
            tone: "plain", kind: "final" };
+}
+/* The script the current campaign is set to, if any. */
+export function campaignScript() {
+  const c = (S.campaigns || []).find((x) => x.id === S.campaign);
+  return (c && c.script_version) || "";
 }
 export function busy() { return S.state === "DIALING" || S.state === "LIVE" || S.state === "WRAP"; }

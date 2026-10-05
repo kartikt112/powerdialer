@@ -68,7 +68,7 @@ export function closeModal(force) {
 }
 
 /* ---- menus ------------------------------------------------------------ */
-const MENUS = [["agent-menu", "b-agent"], ["pause-menu", "b-pause"]];
+const MENUS = [["agent-menu", "b-agent"], ["pause-menu", "b-pause"], ["camp-menu", "b-campaign"]];
 export function closeMenus() {
   MENUS.forEach(([m, b]) => { $(m).hidden = true; $(b).setAttribute("aria-expanded", "false"); });
 }

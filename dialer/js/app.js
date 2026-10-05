@@ -16,7 +16,9 @@ import { renderOutcomes, setSuggested, resetWrap, wrapKey, getWrapMode, backToOu
 import { refreshStats, statsSheet, wireFunnel } from "./funnel.js";
 import { sessionStartModal, sessionEndCard } from "./session.js";
 import { selectTab, refreshQueue, refreshCallbacks, refreshCalls, refreshInbox, refreshBookings, refreshNumbers, wireRails } from "./rails.js";
-import { agentPicker, manualModal, shortcutsModal, logModal, settingsModal, applyTheme, pickList, uploadList } from "./modals.js";
+import { agentPicker, manualModal, shortcutsModal, logModal, settingsModal, applyTheme } from "./modals.js";
+import { wireCampaigns, loadListModal, manageModal, deleteLeads, refreshTarget } from "./campaigns.js";
+import { openAnalytics } from "./analytics.js";
 
 let carrier = simulatorCarrier();
 let activeCall = null, incoming = null;
@@ -200,7 +202,8 @@ function setState(s) {
   $("b-vmdrop").disabled = !inCall || S.inbound || !vmOk;
   $("b-vmdrop").title = vmOk ? "Play your recorded voicemail and move on" : "No voicemail on this attempt. Messages go out on tries " + (S.cfg.voicemail_attempts || [1, 3, 5]).join(", ") + " only.";
   if (!inCall) { setMuted(false); toggleKeypad(false); $("quality").hidden = true; }
-  $("rec").hidden = !(inCall && S.cfg && S.cfg.recording);
+  $("rec").hidden = !(inCall && S.call.recording_sid);
+  $("b-record").hidden = !(inCall && S.call.recording_held && !S.call.recording_sid);
 
   $("wrap").hidden = !wrap;
   if (!wrap) resetWrap();
@@ -527,6 +530,39 @@ function onAnswered() {
   setState("LIVE");
   say("Connected: <b>" + esc(S.cur ? (S.cur.co || fmtPhone(S.cur.phone)) : "caller") + "</b>");
   emit("call-answered");
+  maybeRecord();
+}
+
+/* Recording. One-party-consent states: starts at pickup. All-party-consent
+   states (or no state on file): held until you've told them and press R. */
+function needsConsent(lead) {
+  const states = S.cfg.all_party_states || [];             // empty unless compliance.hold_recording_in_all_party_states
+  if (!states.length) return false;
+  const st = String((lead && lead.state) || "").trim().toUpperCase();
+  return !st || states.indexOf(st) >= 0;
+}
+function maybeRecord() {
+  if (activeCall && activeCall.sid) S.call.call_sid = activeCall.sid();
+  if (!S.cfg.recording || S.inbound || !activeCall || !activeCall.sid || !activeCall.sid()) return;
+  if (needsConsent(S.cur)) {
+    S.call.recording_held = true;
+    setState(S.state);
+    renderScript();
+    toast("info", "<b>Not recording yet.</b> " + esc((S.cur && S.cur.state) || "Their state") +
+      " needs everyone's consent. Say &ldquo;" + esc(S.cfg.disclosure) + "&rdquo;, then press <kbd>r</kbd>.", { ms: 12000 });
+    return;
+  }
+  startRecording();
+}
+function startRecording() {
+  if (S.state !== "LIVE" || S.call.recording_sid || !activeCall || !activeCall.sid()) return;
+  api("/api/record/start", { call_sid: activeCall.sid() }).then((d) => {
+    if (d.error) { toast("error", "<b>Recording didn't start.</b> " + esc(d.error)); return; }
+    S.call.recording_sid = d.recording_sid;
+    S.call.call_sid = activeCall ? activeCall.sid() : S.call.call_sid;
+    setState(S.state);
+    say("Recording");
+  });
 }
 
 function onEnded(reason) {
@@ -684,6 +720,7 @@ document.addEventListener("keydown", (e) => {
   if (wrapKey(e, k)) return;
 
   if (k === "m" && S.state === "LIVE") setMuted(!S.muted);
+  if (k === "r" && S.state === "LIVE" && S.call.recording_held && !S.call.recording_sid) { startRecording(); return; }
   else if (k === "k" && S.state === "LIVE") toggleKeypad();
   else if (k === "v" && S.state === "LIVE") vmDrop();
   else if (k === "s" && S.state === "READY") skip();
@@ -725,6 +762,7 @@ function wire() {
   $("b-dial").addEventListener("click", dial);
   $("b-hangup").addEventListener("click", hangup);
   $("b-mute").addEventListener("click", () => setMuted(!S.muted));
+  $("b-record").addEventListener("click", startRecording);
   $("b-keypad").addEventListener("click", () => toggleKeypad());
   $("b-vmdrop").addEventListener("click", vmDrop);
   $("b-skip").addEventListener("click", skip);
@@ -754,7 +792,9 @@ function wire() {
     if (act === "switch") {
       if (busy()) toast("warn", "Finish this call before switching agent.");
       else agentPicker(false).then(() => { renderAgent(); renderScript(); });
-    } else if (act === "load") pickList();
+    } else if (act === "load") loadListModal();
+    else if (act === "campaigns") manageModal();
+    else if (act === "analytics") openAnalytics();
     else if (act === "log") logModal();
     else if (act === "scripts") openScriptEditor(currentStepId(), currentVersion());
     else if (act === "settings") settingsModal();
@@ -770,10 +810,27 @@ function wire() {
   $("e-acts").addEventListener("click", (e) => {
     const b = e.target.closest("[data-act]"); if (!b) return;
     const act = b.getAttribute("data-act");
-    if (act === "resume") resume(); else if (act === "load") pickList();
+    if (act === "resume") resume(); else if (act === "load") loadListModal();
     else if (act === "manual") manualModal(); else if (act === "refresh") nextLead();
   });
-  $("f-list").addEventListener("change", function () { if (this.files[0]) uploadList(this.files[0]); this.value = ""; });
+  $("f-list").addEventListener("change", function () { if (this.files[0]) loadListModal(this.files[0]); this.value = ""; });
+  $("sb-analytics").addEventListener("click", () => openAnalytics());
+  $("b-del-lead").addEventListener("click", () => {
+    if (!S.cur) return;
+    if (busy()) { toast("warn", "Finish this call first, then remove the lead."); return; }
+    deleteLeads([S.cur.phone], S.cur.co || fmtPhone(S.cur.phone));
+  });
+  on("campaign", () => {
+    renderScript();
+    refreshStats();
+    if (!busy() && !S.session.paused) nextLead();
+  });
+  on("campaign-edited", renderScript);
+  on("campaigns-loaded", renderScript);
+  on("leads-removed", (phones) => {
+    if (S.cur && (phones || []).indexOf(S.cur.phone) >= 0 && !busy()) nextLead();
+    refreshStats(); refreshTarget();
+  });
 
   let draftTimer;
   $("notes").addEventListener("input", () => {
@@ -837,6 +894,7 @@ function boot() {
     renderAgent();
     say("Signed in as " + esc(S.agentName) + " (" + esc(S.agent) + ")");
     emit("cfg", S.cfg);
+    wireCampaigns();
     if (S.cfg.live) api(withAgent("/api/token")).then((d) => { if (d && d.token) attachCarrier(d.token); else simMode(); }).catch(simMode);
     else simMode();
     nextLead();

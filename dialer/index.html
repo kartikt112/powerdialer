@@ -26,6 +26,11 @@
 
   <span class="lamp" id="lamp" role="status"><i></i><span id="lamp-text">Idle</span></span>
 
+  <div class="menu-wrap camp-wrap">
+    <button class="btn quiet" id="b-campaign" aria-haspopup="menu" aria-expanded="false" title="Which campaign you're calling">Campaign</button>
+    <div class="menu left camp-menu" id="camp-menu" role="menu" hidden></div>
+  </div>
+
   <div class="session">
     <button class="btn primary" id="b-session">Start session</button>
     <div class="menu-wrap" id="pause-wrap" hidden>
@@ -45,8 +50,10 @@
       <button class="avatar" id="b-agent" aria-haspopup="menu" aria-expanded="false"><i id="agent-ini">A</i><span id="agent-name">agent</span></button>
       <div class="menu" id="agent-menu" role="menu" hidden>
         <div class="head"><b id="am-name">Agent</b><span id="am-seat">seat</span></div>
-        <button role="menuitem" data-act="scripts">Edit scripts</button>
+        <button role="menuitem" data-act="campaigns">Campaigns</button>
         <button role="menuitem" data-act="load">Load a list</button>
+        <button role="menuitem" data-act="analytics">Analytics</button>
+        <button role="menuitem" data-act="scripts">Edit scripts</button>
         <button role="menuitem" data-act="settings">Settings</button>
         <hr>
         <button role="menuitem" data-act="switch">Switch agent</button>
@@ -63,11 +70,15 @@
   <div class="tabs-text" role="tablist" id="sb-range">
     <button role="tab" data-r="today" aria-selected="true">Today</button>
     <button role="tab" data-r="week" aria-selected="false">Week</button>
+    <button role="tab" data-r="month" aria-selected="false">Month</button>
     <button role="tab" data-r="all" aria-selected="false">All</button>
   </div>
   <div class="funnel-cells" id="sb-cells"></div>
   <button class="btn quiet sm" id="sb-more" title="Rates against targets, script versions, CSV (t)">Details</button>
+  <button class="btn quiet sm" id="sb-analytics" title="Day, week and month trends">Analytics</button>
 </div>
+
+<div class="target-line" id="target-line" aria-live="polite"></div>
 
 <div class="banner" id="banner" hidden><span id="banner-text"></span></div>
 
@@ -88,7 +99,16 @@
       <section class="panel" id="p-queue" role="tabpanel">
         <div class="panel-head">
           <h2>Queue <span class="muted" id="h-queue"></span></h2>
-          <button class="btn quiet sm" id="b-manual" title="Dial a number (d)">Dial a number</button>
+          <span class="panel-tools">
+            <button class="btn quiet sm" id="b-select" title="Pick leads to remove">Select</button>
+            <button class="btn quiet sm" id="b-manual" title="Dial a number (d)">Dial a number</button>
+          </span>
+        </div>
+        <div class="bulkbar" id="bulkbar" hidden>
+          <span id="bulk-n">0 picked</span>
+          <button class="btn quiet sm" id="bulk-all">All shown</button>
+          <button class="btn sm danger" id="bulk-del">Remove…</button>
+          <button class="btn quiet sm" id="bulk-done">Done</button>
         </div>
         <label class="search"><span class="sr">Search leads</span>
           <input class="field" id="q" type="search" placeholder="Search company, person, number" autocomplete="off"></label>
@@ -138,6 +158,7 @@
           <div class="phone-row">
             <span class="phone" id="c-phone"></span>
             <button class="btn quiet sm" id="b-copy" title="Copy number (c)">Copy</button>
+            <button class="btn quiet sm" id="b-del-lead" title="Take this lead off the list">Remove lead</button>
           </div>
 
           <div class="facts">
@@ -292,6 +313,7 @@
       <div class="cb-side">
         <span class="cb-note warn" id="quality" hidden><span id="quality-t">Poor connection</span></span>
         <span class="cb-note rec" id="rec" hidden>Recording</span>
+        <button class="btn sm rec-hold" id="b-record" hidden title="Start recording (r) after telling them">Say it, then record <kbd>r</kbd></button>
         <span class="cb-note" id="mode-pill" hidden></span>
         <span class="cid"><span id="cid">-</span><span class="muted" id="k-dials"></span></span>
       </div>

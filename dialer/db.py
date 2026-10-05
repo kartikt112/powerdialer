@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import sqlite3
+import threading
 
 import funnel
 import policy
@@ -176,6 +177,21 @@ CREATE TABLE IF NOT EXISTS agent_events (
   agent TEXT, event TEXT, reason TEXT DEFAULT '', at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_events ON agent_events(agent, at);
+
+-- Campaigns: a set of leads called together (one or more uploaded lists),
+-- with its own script and daily target. A number can sit in several
+-- campaigns; its tries, callbacks and do-not-call stay shared, so it is
+-- never double-called.
+CREATE TABLE IF NOT EXISTS campaigns (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, script_version TEXT DEFAULT '',
+  daily_target INTEGER DEFAULT 0, status TEXT DEFAULT 'active',     -- active | archived | deleted
+  created_at TEXT, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS campaign_leads (
+  campaign_id INTEGER NOT NULL, phone TEXT NOT NULL, added_at TEXT, source_file TEXT DEFAULT '',
+  PRIMARY KEY (campaign_id, phone)
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_leads_phone ON campaign_leads(phone);
 """
 
 # Columns added after the first deploy; applied idempotently by init().
@@ -219,6 +235,13 @@ MIGRATIONS = [
     ("dispositions", "talk_seconds", "INTEGER DEFAULT 0"),
     ("dispositions", "attempt_no", "INTEGER DEFAULT 0"),
     ("dispositions", "session_id", "INTEGER"),
+    # Campaigns and lead delete
+    ("dispositions", "campaign_id", "INTEGER"),
+    # Call recording
+    ("dispositions", "call_sid", "TEXT DEFAULT ''"),
+    ("dispositions", "recording_sid", "TEXT DEFAULT ''"),
+    ("leads", "deleted_at", "TEXT"),
+    ("leads", "prev_status", "TEXT"),
 ]
 
 
@@ -247,6 +270,7 @@ def init():
             if column not in have:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
                 added.add(column)
+        _campaigns_from_lists(con)
         if "pickup" in added:            # first boot after the funnel landed: flag old history
             for key, f in funnel.LEGACY_FLAGS.items():
                 con.execute(
@@ -257,7 +281,176 @@ def init():
 
 def lead_count(con=None):
     with connect() as con:
-        return con.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+        return con.execute("SELECT COUNT(*) FROM leads WHERE status != 'DELETED'").fetchone()[0]
+
+
+# --------------------------------------------------------------- campaigns --
+# The cockpit says which campaign it is calling on every request; serve.py
+# sets it here per request thread, and every queue, list and stats query
+# below narrows to it. None means every campaign.
+
+_ctx = threading.local()
+
+
+def use_campaign(campaign_id):
+    try:
+        _ctx.cid = int(campaign_id) or None
+    except (TypeError, ValueError):
+        _ctx.cid = None
+
+
+def current_campaign():
+    return getattr(_ctx, "cid", None)
+
+
+def _cc(col="phone"):
+    """' AND <lead phone column> in the current campaign', or ''."""
+    cid = current_campaign()
+    return f" AND {col} IN (SELECT phone FROM campaign_leads WHERE campaign_id = {int(cid)})" if cid else ""
+
+
+def _cd(col="campaign_id"):
+    """' AND <dispositions.campaign_id> is the current campaign', or ''."""
+    cid = current_campaign()
+    return f" AND {col} = {int(cid)}" if cid else ""
+
+
+def campaign_name_for(source_file):
+    base = os.path.splitext(os.path.basename(source_file or ""))[0]
+    if not base or base == "manual dial":
+        return "Dialed by hand"
+    if base.startswith("demo_leads"):
+        return "Demo leads"
+    return base.replace("_", " ").replace("-", " ").strip().capitalize()
+
+
+def _campaigns_from_lists(con):
+    """Every lead belongs to a campaign. On the first boot with campaigns, and
+    for anything loaded outside the cockpit since (demo seed, CLI import),
+    leads with no campaign join one named after their list, so nothing on
+    file goes missing and old calls keep their numbers."""
+    t = iso(now())
+    orphans = """FROM leads WHERE status != 'DELETED' AND phone NOT IN (SELECT phone FROM campaign_leads)"""
+    for (source,) in con.execute(f"SELECT COALESCE(source_file, '') s {orphans} GROUP BY s ORDER BY MIN(created_at)").fetchall():
+        name = campaign_name_for(source)
+        row = con.execute("SELECT id FROM campaigns WHERE name=? AND status='active' ORDER BY id LIMIT 1", (name,)).fetchone()
+        cid = row["id"] if row else con.execute("INSERT INTO campaigns (name, created_at, updated_at) VALUES (?,?,?)",
+                                                 (name, t, t)).lastrowid
+        con.execute(f"INSERT OR IGNORE INTO campaign_leads (campaign_id, phone, added_at, source_file) "
+                    f"SELECT ?, phone, created_at, source_file {orphans} AND COALESCE(source_file, '') = ?", (cid, source))
+    con.execute("UPDATE dispositions SET campaign_id = (SELECT MIN(campaign_id) FROM campaign_leads cl "
+                "WHERE cl.phone = dispositions.phone) WHERE campaign_id IS NULL")
+
+
+def create_campaign(name, script_version="", daily_target=0):
+    t = iso(now())
+    with connect() as con:
+        return con.execute(
+            "INSERT INTO campaigns (name, script_version, daily_target, created_at, updated_at) VALUES (?,?,?,?,?)",
+            ((str(name or "").strip() or "New campaign")[:80], str(script_version or "")[:24],
+             max(0, int(daily_target or 0)), t, t)).lastrowid
+
+
+def update_campaign(campaign_id, fields):
+    sets = {}
+    if str(fields.get("name") or "").strip():
+        sets["name"] = str(fields["name"]).strip()[:80]
+    if "script_version" in fields:
+        sets["script_version"] = str(fields.get("script_version") or "")[:24]
+    if "daily_target" in fields:
+        try:
+            sets["daily_target"] = max(0, min(2000, int(fields.get("daily_target") or 0)))
+        except (TypeError, ValueError):
+            pass
+    if fields.get("status") in ("active", "archived"):
+        sets["status"] = fields["status"]
+    if not sets:
+        return
+    sets["updated_at"] = iso(now())
+    with connect() as con:
+        con.execute(f"UPDATE campaigns SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
+                    list(sets.values()) + [int(campaign_id)])
+
+
+def campaigns_list():
+    """Every campaign with its numbers."""
+    t = now()
+    start = day_start(t)
+    with connect() as con:
+        rows = con.execute(
+            """SELECT c.*,
+                 (SELECT COUNT(*) FROM campaign_leads cl JOIN leads l ON l.phone=cl.phone
+                    WHERE cl.campaign_id=c.id AND l.status != 'DELETED') leads,
+                 (SELECT COUNT(*) FROM campaign_leads cl JOIN leads l ON l.phone=cl.phone
+                    WHERE cl.campaign_id=c.id AND l.status IN ('NEW','OUT')) open,
+                 (SELECT COUNT(*) FROM campaign_leads cl JOIN leads l ON l.phone=cl.phone
+                    WHERE cl.campaign_id=c.id AND l.status IN ('NEW','OUT') AND l.attempts = 0) untouched,
+                 (SELECT COUNT(*) FROM dispositions d WHERE d.campaign_id=c.id AND d.disposition != 'SKIP' AND d.at >= ?) dials_today,
+                 (SELECT COUNT(*) FROM dispositions d WHERE d.campaign_id=c.id AND d.disposition != 'SKIP') dials_all,
+                 (SELECT COUNT(*) FROM dispositions d WHERE d.campaign_id=c.id AND d.booked = 1) booked,
+                 (SELECT GROUP_CONCAT(DISTINCT cl.source_file) FROM campaign_leads cl WHERE cl.campaign_id=c.id) files
+               FROM campaigns c WHERE c.status != 'deleted' ORDER BY c.status = 'archived', c.id DESC""", (start,)).fetchall()
+    return [dict(r, files=[f for f in (r["files"] or "").split(",") if f]) for r in rows]
+
+
+def delete_leads(phones, agent=""):
+    """Take leads off every queue and list. They stay on file as DELETED so
+    calls already made still count and an undo can bring them back; a later
+    upload won't add them again."""
+    phones = [str(p) for p in phones or [] if p]
+    if not phones:
+        return 0
+    marks = ",".join("?" * len(phones))
+    with connect() as con:
+        return con.execute(
+            f"UPDATE leads SET prev_status=status, status='DELETED', deleted_at=?, checked_out_by=NULL "
+            f"WHERE phone IN ({marks}) AND status != 'DELETED'", [iso(now())] + phones).rowcount
+
+
+def restore_leads(phones):
+    phones = [str(p) for p in phones or [] if p]
+    if not phones:
+        return 0
+    marks = ",".join("?" * len(phones))
+    with connect() as con:
+        return con.execute(
+            f"UPDATE leads SET status=COALESCE(prev_status, 'NEW'), prev_status=NULL, deleted_at=NULL "
+            f"WHERE phone IN ({marks}) AND status='DELETED'", phones).rowcount
+
+
+def remove_from_campaign(phones, campaign_id):
+    """Drop numbers from one campaign. A number left in no campaign is deleted."""
+    phones = [str(p) for p in phones or [] if p]
+    if not phones or not campaign_id:
+        return 0
+    marks = ",".join("?" * len(phones))
+    with connect() as con:
+        con.execute(f"DELETE FROM campaign_leads WHERE campaign_id=? AND phone IN ({marks})", [int(campaign_id)] + phones)
+        orphans = [r[0] for r in con.execute(
+            f"SELECT phone FROM leads WHERE phone IN ({marks}) AND phone NOT IN (SELECT phone FROM campaign_leads)", phones)]
+        con.execute(f"UPDATE leads SET status='NEW', checked_out_by=NULL WHERE status='OUT' AND phone IN ({marks})", phones)
+    delete_leads(orphans)
+    return len(phones)
+
+
+def delete_campaign(campaign_id):
+    """Remove a campaign. Leads in no other campaign go with it (as DELETED,
+    so their call history still counts); shared leads stay in the others."""
+    cid = int(campaign_id)
+    with connect() as con:
+        only_here = [r[0] for r in con.execute(
+            """SELECT cl.phone FROM campaign_leads cl WHERE cl.campaign_id=? AND NOT EXISTS (
+                 SELECT 1 FROM campaign_leads o JOIN campaigns c ON c.id=o.campaign_id
+                 WHERE o.phone=cl.phone AND o.campaign_id != ? AND c.status != 'deleted')""", (cid, cid))]
+        con.execute("UPDATE campaigns SET status='deleted', updated_at=? WHERE id=?", (iso(now()), cid))
+    return delete_leads(only_here)
+
+
+def link_to_campaign(phone, campaign_id, source_file=""):
+    if campaign_id:
+        with connect() as con:
+            con.execute("INSERT OR IGNORE INTO campaign_leads (campaign_id, phone, added_at, source_file) VALUES (?,?,?,?)",
+                        (int(campaign_id), phone, iso(now()), source_file))
 
 
 # ---------------------------------------------------------------- import --
@@ -294,10 +487,11 @@ def _row_to_lead(row):
     }
 
 
-def import_list_csv(path):
-    """Load a listprep-generated list. Returns (added, refreshed). Known leads
-    that have not been worked yet pick up the new rank and research fields;
-    anything already dialed keeps its history untouched."""
+def import_list_csv(path, campaign_id=None, label=None):
+    """Load a listprep-generated list into a campaign. Returns (added,
+    refreshed). Known leads that have not been worked yet pick up the new
+    rank and research fields; anything already dialed keeps its history
+    untouched; leads you deleted stay deleted."""
     stamp = iso(now())
     source = os.path.basename(path)
     cols = ", ".join(LEAD_FIELDS)
@@ -310,14 +504,21 @@ def import_list_csv(path):
             phone, fields = _row_to_lead(row)
             if not phone:
                 continue
+            if con.execute("SELECT 1 FROM leads WHERE phone=? AND status='DELETED'", (phone,)).fetchone():
+                continue
             con.execute(
                 f"""INSERT INTO leads (phone, {cols}, source_file, created_at)
                     VALUES (:phone, {marks}, :source_file, :created_at)
                     ON CONFLICT(phone) DO UPDATE SET {refresh}, source_file=:source_file
                     WHERE leads.status='NEW' AND leads.attempts=0""",
                 dict(fields, phone=phone, source_file=source, created_at=stamp))
+            if campaign_id:
+                con.execute("INSERT OR IGNORE INTO campaign_leads (campaign_id, phone, added_at, source_file) VALUES (?,?,?,?)",
+                            (int(campaign_id), phone, stamp, label or source))
             processed += 1
         added = con.execute("SELECT COUNT(*) FROM leads").fetchone()[0] - before
+        if not campaign_id:
+            _campaigns_from_lists(con)                  # no campaign given: one named after the list
     return added, processed - added
 
 
@@ -527,7 +728,7 @@ def _zones(con, t):
     the clock says there right now."""
     args = {"now": iso(t), "max": MAX_ATTEMPTS, "mobile": int(ALLOW_MOBILE)}
     out = []
-    for r in con.execute(f"SELECT tz_name, tz_offset, COUNT(*) n FROM leads WHERE {_ELIGIBLE} GROUP BY tz_name, tz_offset", args):
+    for r in con.execute(f"SELECT tz_name, tz_offset, COUNT(*) n FROM leads WHERE {_ELIGIBLE}{_cc()} GROUP BY tz_name, tz_offset", args):
         zone = {"tz_name": r["tz_name"] or "", "tz_offset": r["tz_offset"]}
         local = to_local(zone, t)
         midnight_utc = to_utc(zone, local.replace(hour=0, minute=0, second=0, microsecond=0))
@@ -535,7 +736,7 @@ def _zones(con, t):
         if ENFORCE_WINDOWS:
             where += " AND (next_half IS NULL OR next_half='' OR next_half=:half)"
         zargs = dict(args, tzn=zone["tz_name"], tzo=zone["tz_offset"], midnight=iso(midnight_utc), half=policy.half(local))
-        n = con.execute(f"SELECT COUNT(*) FROM leads WHERE {_ELIGIBLE} AND tz_name=:tzn AND tz_offset IS :tzo AND {where}", zargs).fetchone()[0]
+        n = con.execute(f"SELECT COUNT(*) FROM leads WHERE {_ELIGIBLE}{_cc()} AND tz_name=:tzn AND tz_offset IS :tzo AND {where}", zargs).fetchone()[0]
         out.append(dict(zone, local=local, tier=lead_tier(zone, t), label=policy.zone_label(zone["tz_name"], lead_offset(zone, t)),
                         eligible=n, where=where, args=zargs))
     return out
@@ -597,16 +798,18 @@ def checkout(agent):
             (iso(t - timedelta(minutes=CHECKOUT_TTL_MIN)),))
 
         held = con.execute(
-            "SELECT * FROM leads WHERE status='OUT' AND checked_out_by=? "
-            "ORDER BY checked_out_at DESC LIMIT 1", (agent,)).fetchone()
+            "SELECT * FROM leads WHERE status='OUT' AND checked_out_by=?" + _cc() +
+            " ORDER BY checked_out_at DESC LIMIT 1", (agent,)).fetchone()
         if held is not None:
             con.execute("UPDATE leads SET checked_out_at=? WHERE id=?", (iso(t), held["id"]))
             return _with_caller_id(con, held)
+        # A lead held from another campaign goes back to its own queue.
+        con.execute("UPDATE leads SET status='NEW', checked_out_by=NULL WHERE status='OUT' AND checked_out_by=?", (agent,))
 
         pick = None
         due = con.execute(
             """SELECT * FROM leads WHERE status='NEW' AND callback_at IS NOT NULL
-               AND callback_at <= ? AND (is_mobile=0 OR ?=1) ORDER BY callback_at LIMIT 50""",
+               AND callback_at <= ? AND (is_mobile=0 OR ?=1)""" + _cc() + " ORDER BY callback_at LIMIT 50",
             (iso(t), int(ALLOW_MOBILE))).fetchall()
         pick = next((r for r in due if in_hard(r, t)), None)
 
@@ -617,7 +820,7 @@ def checkout(agent):
                 best = None
                 for z in (z for z in zones if z["tier"] == tier and z["eligible"]):
                     r = con.execute(
-                        f"SELECT * FROM leads WHERE {_ELIGIBLE} AND tz_name=:tzn AND tz_offset IS :tzo AND {z['where']} "
+                        f"SELECT * FROM leads WHERE {_ELIGIBLE}{_cc()} AND tz_name=:tzn AND tz_offset IS :tzo AND {z['where']} "
                         "ORDER BY skipped, rank DESC, attempts LIMIT 1", z["args"]).fetchone()
                     if r is not None and (best is None or (r["skipped"], -r["rank"], r["attempts"]) < (best["skipped"], -best["rank"], best["attempts"])):
                         best = r
@@ -631,7 +834,8 @@ def checkout(agent):
                 return None, "Leads remain, but nobody is inside a calling window on their own clock right now."
             if zones:
                 return None, "Every lead left was already tried today, or is waiting for its next morning or afternoon slot."
-            return None, "Queue is empty. Load a new list or wait for retries to come due."
+            return None, ("This campaign's queue is empty. Load another list into it, or wait for retries to come due."
+                          if current_campaign() else "Queue is empty. Load a new list or wait for retries to come due.")
 
         if _scrubbed(con, pick):
             con.commit()
@@ -651,7 +855,7 @@ def history(phone, limit=20):
     with connect() as con:
         return [dict(r) for r in con.execute(
             "SELECT id, disposition, notes, agent, duration, at, objections, pain, booked_for, "
-            "show_status, sale, attempt_no, script_version FROM dispositions "
+            "show_status, sale, attempt_no, script_version, recording_sid FROM dispositions "
             "WHERE phone=? ORDER BY at DESC, id DESC LIMIT ?", (phone, limit))]
 
 
@@ -659,8 +863,8 @@ def queue_preview(limit=5):
     with connect() as con:
         return [dict(r) for r in con.execute(
             """SELECT company, state, rank FROM leads WHERE status='NEW'
-               AND callback_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-               ORDER BY skipped, rank DESC LIMIT ?""", (iso(now()), limit))]
+               AND callback_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)""" + _cc() +
+            " ORDER BY skipped, rank DESC LIMIT ?", (iso(now()), limit))]
 
 
 _LIST_COLS = ("phone, first, last, company, title, city, state, tz_offset, tz_name, rank, process, "
@@ -688,9 +892,9 @@ def lead_list(q="", limit=60):
             digits = "".join(ch for ch in q if ch.isdigit())
             rows = con.execute(
                 f"""SELECT {_LIST_COLS} FROM leads
-                    WHERE company LIKE ? OR first LIKE ? OR last LIKE ?
+                    WHERE status != 'DELETED' AND (company LIKE ? OR first LIKE ? OR last LIKE ?
                        OR (first || ' ' || last) LIKE ? OR state LIKE ?
-                       OR (? != '' AND phone LIKE ?)
+                       OR (? != '' AND phone LIKE ?)){_cc()}
                     ORDER BY (status='NEW') DESC, rank DESC LIMIT ?""",
                 (like, like, like, like, q, digits, f"%{digits}%", limit)).fetchall()
         else:
@@ -698,7 +902,7 @@ def lead_list(q="", limit=60):
                 f"""SELECT {_LIST_COLS} FROM leads WHERE status='NEW'
                     AND callback_at IS NULL
                     AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                    AND attempts < ?
+                    AND attempts < ?{_cc()}
                     ORDER BY skipped, rank DESC, attempts LIMIT ?""",
                 (iso(t), MAX_ATTEMPTS, limit)).fetchall()
         return [_list_row(r, t) for r in rows]
@@ -710,7 +914,7 @@ def callbacks_list(limit=100):
     with connect() as con:
         rows = con.execute(
             f"""SELECT {_LIST_COLS} FROM leads
-                WHERE status IN ('NEW','OUT') AND callback_at IS NOT NULL
+                WHERE status IN ('NEW','OUT') AND callback_at IS NOT NULL{_cc()}
                 ORDER BY callback_at LIMIT ?""", (limit,)).fetchall()
         out = []
         for r in rows:
@@ -727,10 +931,10 @@ def callbacks_list(limit=100):
 def calls_today(agent=None, limit=300):
     sql = ("""SELECT d.id, d.phone, d.company, d.disposition, d.notes, d.agent,
                      d.duration, d.at, d.objections, d.pain, d.booked, d.booked_for,
-                     d.show_status, d.sale, d.sale_amount, d.script_version,
+                     d.show_status, d.sale, d.sale_amount, d.script_version, d.recording_sid,
                      l.first, l.last, l.tz_offset, l.tz_name, l.status, l.email
               FROM dispositions d LEFT JOIN leads l ON l.phone = d.phone
-              WHERE d.at >= ? AND d.disposition != 'SKIP'""")
+              WHERE d.at >= ? AND d.disposition != 'SKIP'""") + _cd("d.campaign_id")
     args = [day_start()]
     if agent:
         sql += " AND d.agent = ?"
@@ -756,7 +960,7 @@ def bookings(limit=200):
                       d.sale_amount, d.pain, d.notes, d.script_version, d.agent,
                       l.first, l.last, l.dm_name, l.email, l.tz_offset, l.tz_name, l.process
                FROM dispositions d LEFT JOIN leads l ON l.phone = d.phone
-               WHERE d.booked = 1 ORDER BY d.booked_for DESC LIMIT ?""", (limit,)).fetchall()
+               WHERE d.booked = 1""" + _cd("d.campaign_id") + " ORDER BY d.booked_for DESC LIMIT ?", (limit,)).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -847,6 +1051,12 @@ def checkout_specific(phone, agent, tz_offset=None, tz_name="", returning=False)
                 (phone, "", tz_offset if tz_offset is not None else -5, tz_name or "",
                  "manual", "manual dial", "manual dial", iso(t)))
             row = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
+        if current_campaign():
+            con.execute("INSERT OR IGNORE INTO campaign_leads (campaign_id, phone, added_at, source_file) VALUES (?,?,?,?)",
+                        (current_campaign(), phone, iso(t), "dialed by hand"))
+        if row["status"] == "DELETED":
+            con.execute("UPDATE leads SET status=COALESCE(prev_status, 'NEW'), prev_status=NULL, deleted_at=NULL WHERE id=?", (row["id"],))
+            row = con.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
 
         if row["status"] == "DNC":
             return None, "That lead is marked do-not-call."
@@ -907,19 +1117,22 @@ def disposition(phone, company, dispo, notes, agent, duration, callback_at=None,
                 "SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone() is not None
         attempts = (lead["attempts"] if lead else 0) + 1
         objections = [str(o)[:80] for o in (extra.get("objections") or [])][:12]
+        member = [r[0] for r in con.execute("SELECT campaign_id FROM campaign_leads WHERE phone=? ORDER BY campaign_id", (phone,))]
+        campaign_id = current_campaign() if current_campaign() in member else (member[0] if member else current_campaign())
 
         cur = con.execute(
             """INSERT INTO dispositions (phone, company, disposition, notes, agent, duration, at, prev_state,
                  pickup, dm, pitched, resonated, offered, booked, objections, pain, booked_for,
-                 script_version, number_used, talk_seconds, attempt_no, session_id)
-               VALUES (?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?, ?,?,?,?,?)""",
+                 script_version, number_used, talk_seconds, attempt_no, session_id, campaign_id, call_sid, recording_sid)
+               VALUES (?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?, ?,?,?,?,?,?,?,?)""",
             (phone, company, dispo, notes, agent, duration, t,
              json.dumps(snap) if snap is not None else None,
              flags["pickup"], flags["dm"], flags["pitched"], flags["resonated"], flags["offered"], flags["booked"],
              json.dumps(objections) if objections else None, (extra.get("pain") or "")[:500],
              extra.get("booked_for"), (extra.get("script_version") or "")[:24],
              (extra.get("number_used") or "")[:20], duration if flags["pickup"] else 0,
-             attempts, extra.get("session_id")))
+             attempts, extra.get("session_id"), campaign_id,
+             str(extra.get("call_sid") or "")[:40], str(extra.get("recording_sid") or "")[:40]))
         dispo_id = cur.lastrowid
 
         if dispo == "DNC":
@@ -1069,7 +1282,7 @@ _FUNNEL_COLS = ("phone, disposition, at, agent, duration, pickup, dm, pitched, r
 
 
 def funnel_rows(start=None, agent=None, script=None, since=None, session_id=None):
-    sql, args = f"SELECT {_FUNNEL_COLS} FROM dispositions WHERE disposition != 'SKIP'", []
+    sql, args = f"SELECT {_FUNNEL_COLS} FROM dispositions WHERE disposition != 'SKIP'" + _cd(), []
     for clause, value in (("at >= ?", start), ("agent = ?", agent), ("script_version = ?", script),
                           ("at >= ?", since), ("session_id = ?", session_id)):
         if value:
@@ -1082,7 +1295,7 @@ def funnel_rows(start=None, agent=None, script=None, since=None, session_id=None
 def stats(agent=None, range_kind="today", script=None, since=None, labels=None):
     """Queue health plus the Imperium funnel for the asked range."""
     t = now()
-    if range_kind not in ("today", "week", "all"):
+    if range_kind not in ("today", "week", "month", "all"):
         range_kind = "today"
     start = funnel.range_start(range_kind, t, STATS_TZ)
     rows = funnel_rows(iso(start) if start else None, agent, script)
@@ -1097,19 +1310,19 @@ def stats(agent=None, range_kind="today", script=None, since=None, labels=None):
             "parked": sorted(_parked(con)),
             "callbacks_due": row(
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND callback_at IS NOT NULL "
-                "AND callback_at <= ?", iso(t + timedelta(hours=24))),
+                "AND callback_at <= ?" + _cc(), iso(t + timedelta(hours=24))),
             "callbacks_overdue": row(
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND callback_at IS NOT NULL "
-                "AND callback_at <= ?", iso(t)),
+                "AND callback_at <= ?" + _cc(), iso(t)),
             "queue": row(
                 "SELECT COUNT(*) FROM leads WHERE status='NEW' AND callback_at IS NULL "
-                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) AND attempts < ?",
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) AND attempts < ?" + _cc(),
                 iso(t), MAX_ATTEMPTS),
-            "exhausted": row("SELECT COUNT(*) FROM leads WHERE status='EXHAUSTED'"),
+            "exhausted": row("SELECT COUNT(*) FROM leads WHERE status='EXHAUSTED'" + _cc()),
             "retry_pool": row(
-                "SELECT COUNT(*) FROM leads WHERE status='NEW' AND next_attempt_at > ?", iso(t)),
+                "SELECT COUNT(*) FROM leads WHERE status='NEW' AND next_attempt_at > ?" + _cc(), iso(t)),
             "bookings_open": row(
-                "SELECT COUNT(*) FROM dispositions WHERE booked=1 AND show_status IS NULL AND booked_for <= ?", iso(t)),
+                "SELECT COUNT(*) FROM dispositions WHERE booked=1 AND show_status IS NULL AND booked_for <= ?" + _cd(), iso(t)),
         }
     out.update({
         "range": range_kind, "script": script or "",
@@ -1123,6 +1336,91 @@ def stats(agent=None, range_kind="today", script=None, since=None, labels=None):
     if since:
         out["session"] = funnel.summarise(funnel_rows(agent=agent, since=since), t)
     return out
+
+
+DAILY_TARGET = 150                 # dials a day when a campaign sets none; config dialer.daily_target
+
+
+def _calling_ends(con, t):
+    """UTC moment today's cold-calling windows close for the last zone that
+    still has leads in the current campaign, or None when none open again today."""
+    zones = _zones(con, t)
+    last = None
+    for z in zones:
+        local = z["local"].replace(second=0, microsecond=0)
+        probe, end = local, None
+        for _ in range(24 * 4):
+            if policy.tier(probe, WINDOWS) is not None:
+                end = probe + timedelta(minutes=15)
+            probe += timedelta(minutes=15)
+            if probe.date() != local.date():
+                break
+        if end is not None:
+            when = to_utc(z, end)
+            if last is None or when > last:
+                last = when
+    return last
+
+
+def target_status(at=None):
+    """Today's dials against the daily target, the pace so far, and whether
+    that pace reaches the target before calling hours end. Also how many
+    calling days the campaign still needs to reach every lead once."""
+    t = at or now()
+    cid = current_campaign()
+    start = day_start(t)
+    with connect() as con:
+        target = DAILY_TARGET
+        name = "All campaigns"
+        if cid:
+            row = con.execute("SELECT name, daily_target FROM campaigns WHERE id=?", (cid,)).fetchone()
+            if row is not None:
+                name = row["name"]
+                target = row["daily_target"] or DAILY_TARGET
+        stamps = [r[0] for r in con.execute(
+            "SELECT at FROM dispositions WHERE disposition != 'SKIP' AND at >= ?" + _cd() + " ORDER BY at", (start,))]
+        untouched = con.execute(
+            "SELECT COUNT(*) FROM leads WHERE status IN ('NEW','OUT') AND attempts = 0" + _cc()).fetchone()[0]
+        open_leads = con.execute("SELECT COUNT(*) FROM leads WHERE status IN ('NEW','OUT')" + _cc()).fetchone()[0]
+        ends = _calling_ends(con, t)
+    done = len(stamps)
+    per_hour = None
+    if done >= 3:
+        span = (t - datetime.fromisoformat(stamps[0])).total_seconds() / 3600.0
+        if span >= 0.25:
+            per_hour = done / span
+    left = max(0, target - done)
+    eta = None
+    if left == 0:
+        verdict = "hit"
+    elif per_hour:
+        eta = t + timedelta(hours=left / per_hour)
+        verdict = "on_track" if (ends is None or eta <= ends) else "short"
+    else:
+        verdict = "no_pace"
+    by_end = None
+    if per_hour and ends is not None and ends > t:
+        by_end = done + int(per_hour * (ends - t).total_seconds() / 3600.0)
+    return {
+        "campaign": name, "target": target, "done": done, "left": left,
+        "per_hour": round(per_hour, 1) if per_hour else None,
+        "eta": iso(eta) if eta else None, "calling_ends": iso(ends) if ends else None,
+        "projected_by_end": by_end, "verdict": verdict,
+        "untouched": untouched, "open": open_leads,
+        "days_to_first_touch": (-(-untouched // target)) if target else None,
+    }
+
+
+def analytics(period="day", count=None, agent=None):
+    """Day, week or month series for the current campaign."""
+    period = period if period in ("day", "week", "month") else "day"
+    count = int(count or {"day": 30, "week": 12, "month": 12}[period])
+    t = now()
+    first = {"day": t - timedelta(days=count + 2), "week": t - timedelta(weeks=count + 1),
+             "month": t - timedelta(days=31 * (count + 1))}[period]
+    rows = funnel_rows(iso(first), agent)
+    return {"period": period, "series": funnel.series(rows, STATS_TZ, period, count, t),
+            "totals": funnel.summarise(rows, t), "tz": STATS_TZ}
 
 
 def funnel_sheet(range_kind="all", agent=None, labels=None):

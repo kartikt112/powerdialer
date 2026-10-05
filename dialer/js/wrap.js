@@ -5,7 +5,7 @@
             and for a booking the time on the prospect's clock.
    Then save, with a few seconds of undo. */
 import { $, icon, esc, fmtPhone, parseUTC, toServer, shifted, leadClock, leadDay, localHour, pad, store } from "./util.js";
-import { S, emit, actions, outcome } from "./state.js";
+import { S, emit, actions, outcome, campaignScript } from "./state.js";
 import { api } from "./api.js";
 import { toast, say } from "./ui.js";
 
@@ -172,9 +172,10 @@ function save() {
   const o = chosen, lead = S.cur, c = S.call, duration = S.callSec;
   const payload = { agent: S.agent, phone: lead.phone, company: lead.co || "", disposition: o.key,
                     notes: $("notes").value.trim(), duration,
-                    script_version: S.session.script || S.cfg.default_script_version || "",
+                    script_version: S.session.script || campaignScript() || S.cfg.default_script_version || "",
                     number_used: (lead.caller_id || $("cid").textContent || "").replace(/[^+\d]/g, ""),
-                    session_id: S.session.id || null };
+                    session_id: S.session.id || null,
+                    call_sid: c.call_sid || "", recording_sid: c.recording_sid || "" };
   if (o.connect && o.kind !== "dnc") {
     readLevel2();
     if (o.kind === "callback") {

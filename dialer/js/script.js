@@ -4,7 +4,7 @@
    a searchable panel (o). Every string comes from config.yaml
    (dialer.scripts), picked by the session's script version. */
 import { $, icon, esc, fmtPhone, fmtClock, parseUTC, leadDay, leadClock, myClock, firstName, pad } from "./util.js";
-import { S, on, emit, outcome } from "./state.js";
+import { S, on, emit, outcome, campaignScript } from "./state.js";
 import { api } from "./api.js";
 import { toast, copyText } from "./ui.js";
 
@@ -56,7 +56,7 @@ export function renderPlain(tpl, vars) {
 
 function version() {
   const tree = (S.cfg.scripts && S.cfg.scripts.tree) || {};
-  const want = S.session.script || S.cfg.default_script_version;
+  const want = S.session.script || campaignScript() || S.cfg.default_script_version;
   return tree[want] ? want : Object.keys(tree)[0];
 }
 function tree() { return ((S.cfg.scripts && S.cfg.scripts.tree) || {})[version()] || { order: {}, steps: {} }; }
@@ -97,7 +97,8 @@ export function setFlow(f) { flow = f; idx = 0; closeObjections(true); renderScr
 function stepHTML(s, vars) {
   const say = s.say || [];
   let h = '<div class="step-h"><h3>' + esc(s.title || s.id) + "</h3></div>";
-  if (s.id === "permission" && S.cfg.recording) h += '<div class="must">' + icon("alert") + "<span>Say first: &ldquo;" + esc(S.cfg.disclosure) + "&rdquo;</span></div>";
+  if (s.id === "permission" && S.cfg.recording && S.call && S.call.recording_held && !S.call.recording_sid)
+    h += '<div class="must">' + icon("alert") + "<span>Not recording yet. Say: &ldquo;" + esc(S.cfg.disclosure) + "&rdquo; then press <kbd>r</kbd>.</span></div>";
   if (flow === "voicemail" && S.cur.caller_id) h += '<div class="cid-line">' + icon("phone", "sm") + "Caller ID in use: <b>" + esc(fmtPhone(S.cur.caller_id)) + "</b></div>";
   if (say[0]) h += '<p class="say">' + renderTpl(say[0], vars) + "</p>";
   say.slice(1).forEach((line) => { h += '<p class="say alt">' + renderTpl(line, vars) + "</p>"; });
@@ -261,7 +262,8 @@ export function renderTimeline() {
       (bf ? '<div class="l2"><b>Booked for:</b> ' + leadDay(bf, cur.tz_offset) + " " + leadClock(bf, cur.tz_offset) + " their time" + (e.show_status ? " · " + esc(e.show_status.toLowerCase().replace("_", " ")) : "") + "</div>" : "") +
       (e.pain ? '<div class="l2"><b>Pain:</b> ' + esc(e.pain) + "</div>" : "") +
       (tagsOf(e) ? '<div class="l2"><b>Objections:</b> ' + esc(tagsOf(e)) + "</div>" : "") +
-      (e.notes ? '<div class="l2">' + esc(e.notes) + "</div>" : "") + "</div></div>";
+      (e.notes ? '<div class="l2">' + esc(e.notes) + "</div>" : "") +
+      (e.recording_sid ? '<div class="l2"><a href="/api/recording/' + esc(e.recording_sid) + '.mp3" target="_blank" rel="noopener">Play recording</a></div>' : "") + "</div></div>";
   }).join("") || '<p class="muted">First time anyone has called this lead.</p>';
 }
 

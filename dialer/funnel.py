@@ -84,7 +84,8 @@ def local_date(stamp_utc, tz_name):
 
 
 def range_start(kind, now_utc, tz_name):
-    """UTC start of today / this week (Monday) in the stats zone; None for all."""
+    """UTC start of today / this week (Monday) / this month in the stats zone;
+    None for all."""
     if kind == "all":
         return None
     zone = _zone(tz_name)
@@ -92,7 +93,51 @@ def range_start(kind, now_utc, tz_name):
     start = local.replace(hour=0, minute=0, second=0, microsecond=0)
     if kind == "week":
         start -= timedelta(days=start.weekday())
+    elif kind == "month":
+        start = start.replace(day=1)
     return start.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def bucket_of(day, period):
+    """The first day of the day / week (Monday) / month a date belongs to."""
+    if period == "week":
+        return day - timedelta(days=day.weekday())
+    if period == "month":
+        return day.replace(day=1)
+    return day
+
+
+def series(rows, tz_name, period="day", count=30, now_utc=None, workdays_only=False):
+    """Per-period funnel for analytics: the last `count` days, weeks or months
+    in the stats zone, oldest first, empty periods included (0 dials)."""
+    now_utc = now_utc or datetime.now(timezone.utc).replace(tzinfo=None)
+    today = now_utc.replace(tzinfo=timezone.utc).astimezone(_zone(tz_name)).date()
+    keys, cur = [], bucket_of(today, period)
+    while len(keys) < count:
+        if not (workdays_only and period == "day" and cur.weekday() >= 5):
+            keys.append(cur)
+        if period == "day":
+            cur -= timedelta(days=1)
+        elif period == "week":
+            cur -= timedelta(days=7)
+        else:
+            cur = (cur - timedelta(days=1)).replace(day=1)
+    keys.reverse()
+    groups = OrderedDict((k, []) for k in keys)
+    for r in rows:
+        if r.get("disposition") == "SKIP":
+            continue
+        k = bucket_of(local_date(r["at"], tz_name), period)
+        if k in groups:
+            groups[k].append(r)
+    out = []
+    for k, group in groups.items():
+        c = summarise(group, now_utc)
+        out.append({"start": k.isoformat(), "dials": c["dials"], "pickups": c["pickups"], "pitched": c["pitched"],
+                    "resonated": c["resonated"], "booked": c["booked"], "showed": c["showed"], "sales": c["sales"],
+                    "sales_amount": c["sales_amount"], "conversations": c["conversations"],
+                    "talk_seconds": c["talk_seconds"], "rates": c["rates"]})
+    return out
 
 
 def _rate(top, bottom):

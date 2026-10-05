@@ -126,7 +126,50 @@ Call Booked, Sales Calls Done, Sales, Sales $, Notes`.
   national scrub file checked at both (`compliance.dnc_scrub_file`), mobiles
   blocked unless `compliance.allow_mobile`, 30-day recall suppression at prep,
   ITAR and defense shops rejected at prep. Nothing is ever played to the person
-  you call; the recording prompt appears only while `dialer.recording` is true.
+  you call.
+
+## Campaigns, targets, analytics, recording
+
+- **Campaigns.** The Campaign menu (top bar) picks what you are calling: one
+  campaign or all of them. Load a list (Campaign menu, or the agent menu) into
+  a new campaign or add it to an existing one, any time. The queue, callbacks,
+  bookings, today's calls and the stats all narrow to the campaign. Each
+  campaign has its own script version and daily target (Campaigns > Edit).
+  A number in two campaigns is never called twice: tries, callbacks and
+  do-not-call are shared. Archive a campaign to stop calling it, or delete it:
+  its leads go unless another campaign has them, and calls already made stay
+  in the history and the numbers. On the first start after this landed, every
+  list already loaded became its own campaign.
+- **Removing leads.** Remove lead on the lead card, or Select in the queue to
+  pick several. Remove from this campaign only, or delete everywhere, with
+  undo. Deleted leads leave every list, a re-upload doesn't bring them back,
+  and their calls still count.
+- **Daily target.** The strip under the stats bar: dials today against the
+  target, the pace so far, when that pace reaches the target and whether it
+  does before calling hours end on the prospects' clocks, and how many calling
+  days the campaign needs to reach every lead once. Default target:
+  `dialer.daily_target` (150).
+- **Analytics.** Stats bar > Analytics (or the agent menu): day, week and month
+  views with totals, dials per period against the target line, and the full
+  funnel table. The stats bar and the tracker CSV also have a Month range, and
+  exports follow the campaign you are calling.
+- **Recording.** With `dialer.recording: true` every call is recorded from
+  pickup through Twilio's API (two channels, you and them). Each saved call
+  gets a Play link in today's Calls and the lead's history. No disclosure is
+  played or prompted. `compliance.hold_recording_in_all_party_states: true`
+  holds the recording for leads in the all-party-consent states until you've
+  said `compliance.recording_disclosure` and pressed R. Recording stays off on
+  a public server until `DIALER_PASSWORD` is set.
+
+## Deploying on Railway
+
+The `dialer` service builds from this repo's `main` with the Dockerfile. Set
+`DIALER_PASSWORD` (and optionally `DIALER_USER`, default `agent`) in the
+service's Variables before anything else: without it the dialer is open to
+anyone with the link. Sign in once with `https://<domain>/?key=<password>`;
+the cookie lasts 30 days. Turn on automatic deploys under Settings > Source,
+or deploy the newest commit from Deployments after every push. Data lives on
+the volume at `DATA_DIR=/data`.
 
 ## The cockpit
 

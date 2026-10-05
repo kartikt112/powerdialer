@@ -31,8 +31,20 @@ export function refreshQueue() {
   }).catch(() => {});
 }
 
+/* Select mode: tick leads, then remove them in one go. */
+let selecting = false;
+const picked = new Set();
+function syncBulk() {
+  $("bulkbar").hidden = !selecting;
+  $("b-select").textContent = selecting ? "Cancel" : "Select";
+  $("bulk-n").textContent = picked.size + " picked";
+  $("bulk-del").disabled = !picked.size;
+}
+function setSelecting(on) { selecting = on; if (!on) picked.clear(); syncBulk(); renderQueue($("q").value.trim()); }
+
 function renderQueue(q) {
   const now = new Date();
+  syncBulk();
   $("l-queue").innerHTML = S.data.queue.map((l) => {
     const name = ((l.first || "") + " " + (l.last || "")).trim();
     let tag = "";
@@ -44,15 +56,19 @@ function renderQueue(q) {
     }
     const tries = !l.attempts ? "" : l.status === "NEW" ? " · try " + (l.attempts + 1)
       : " · " + l.attempts + (l.attempts === 1 ? " call" : " calls");
-    return '<button class="row' + (l.in_window ? "" : " closed") + '" data-open="' + esc(l.phone) + '"' +
-      (l.status === "DNC" ? " disabled" : "") + ">" +
-      '<span class="rank' + (l.rank >= 80 ? " hot" : "") + '">' + esc(l.rank || "-") + "</span>" +
+    const on = picked.has(l.phone);
+    return '<button class="row' + (l.in_window ? "" : " closed") + (selecting ? " picking" : "") + (on ? " picked" : "") + '" ' +
+      (selecting ? 'data-pick="' : 'data-open="') + esc(l.phone) + '"' + (selecting ? ' aria-pressed="' + on + '"' : "") +
+      (l.status === "DNC" && !selecting ? " disabled" : "") + ">" +
+      (selecting ? '<span class="tick" aria-hidden="true">' + (on ? "&#10003;" : "") + "</span>" :
+        '<span class="rank' + (l.rank >= 80 ? " hot" : "") + '">' + esc(l.rank || "-") + "</span>") +
       '<span class="main"><span class="t1">' + esc(l.company || fmtPhone(l.phone)) + '</span><span class="t2">' +
       esc(name || fmtPhone(l.phone)) + (l.rank ? " · rank " + l.rank : "") + tries + "</span></span>" +
       '<span class="meta">' + (tag || '<span class="num">' + leadClock(now, l.tz_offset) + "</span>" + esc(l.state || "") +
       (l.in_window ? "" : " · closed")) + "</span></button>";
   }).join("") || (q ? note("No match", "Nothing in any list matches &ldquo;" + esc(q) + "&rdquo;.")
-                    : note("Queue is clear", "Load a list from the agent menu, or wait. Retries and callbacks pull back in as they come due."));
+                    : note("Queue is clear", (S.campaign ? "Nothing to call in this campaign right now. Load another list into it from the Campaign menu, " : "Load a list from the Campaign menu, ") +
+                           "or wait: retries and callbacks pull back in as they come due."));
 }
 
 /* ------------------------------------------------------------ callbacks -- */
@@ -138,7 +154,8 @@ function renderCalls() {
       '<span class="main"><span class="t1">' + esc(c.company || fmtPhone(c.phone)) + '</span><span class="t2">' + esc(o.label) +
       (name ? " · " + esc(name) : "") + "</span></span>" +
       '<span class="meta"><span class="num">' + (at ? myClock(at) : "") + "</span>" + (c.duration ? fmtClock(c.duration) : "") + "</span>" +
-      (c.notes ? '<span class="quote">' + esc(c.notes) + "</span>" : "") + "</button>";
+      (c.notes ? '<span class="quote">' + esc(c.notes) + "</span>" : "") +
+      (c.recording_sid ? '<span class="rec-link" data-rec="' + esc(c.recording_sid) + '" role="link" tabindex="0">Play recording</span>' : "") + "</button>";
   }).join("") || note("No calls yet today", "Every outcome you save lands here with its notes, and survives a reload.");
 }
 
@@ -295,7 +312,14 @@ export function wireRails() {
 
   $("rail").addEventListener("click", (e) => {
     let b;
-    if ((b = e.target.closest("[data-follow]"))) followModal(b.getAttribute("data-follow"));
+    if ((b = e.target.closest("[data-rec]"))) {
+      e.stopPropagation();
+      window.open("/api/recording/" + encodeURIComponent(b.getAttribute("data-rec")) + ".mp3", "_blank", "noopener");
+    } else if ((b = e.target.closest("[data-pick]"))) {
+      const p = b.getAttribute("data-pick");
+      if (picked.has(p)) picked.delete(p); else picked.add(p);
+      renderQueue($("q").value.trim());
+    } else if ((b = e.target.closest("[data-follow]"))) followModal(b.getAttribute("data-follow"));
     else if ((b = e.target.closest("[data-open]"))) actions.openLead(b.getAttribute("data-open"));
     else if ((b = e.target.closest("[data-callback]"))) actions.openLead(b.getAttribute("data-callback"), "/api/manual", { returning: true });
     else if ((b = e.target.closest("[data-resched]"))) rescheduleModal(b.getAttribute("data-resched"));
@@ -322,6 +346,13 @@ export function wireRails() {
       renderInbox();
     }
   });
+
+  $("b-select").addEventListener("click", () => setSelecting(!selecting));
+  $("bulk-done").addEventListener("click", () => setSelecting(false));
+  $("bulk-all").addEventListener("click", () => { S.data.queue.forEach((l) => picked.add(l.phone)); renderQueue($("q").value.trim()); });
+  $("bulk-del").addEventListener("click", () => { if (picked.size) actions.deleteLeads([...picked]); });
+  on("leads-removed", () => { picked.clear(); selecting = false; refreshQueue(); refreshCallbacks(); });
+  on("campaign", () => { setSelecting(false); refreshQueue(); refreshCallbacks(); refreshCalls(); refreshBookings(); });
 
   on("saved", () => { refreshCalls(); refreshCallbacks(); refreshBookings(); if (activeTab === "numbers") refreshNumbers(); });
   on("bookings", renderBookings);

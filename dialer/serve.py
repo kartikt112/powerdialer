@@ -83,6 +83,9 @@ def load_dialer_config():
     disclosure = (raw.get("compliance") or {}).get("recording_disclosure") or \
         "This call is being recorded for quality and training purposes."
     cfg["disclosure"] = " ".join(str(disclosure).split())
+    comp = raw.get("compliance") or {}
+    cfg["all_party_states"] = [str(s).upper() for s in (comp.get("all_party_consent_states") or [])] \
+        if comp.get("hold_recording_in_all_party_states") else []
     cfg["campaign"] = (raw.get("campaign") or {}).get("name", "")
     cfg["_raw"] = raw                                       # retry / numbers / compliance, server side only
 
@@ -506,20 +509,22 @@ VM_CACHE = {"at": 0, "items": [], "callers": {}}
 
 
 def list_voicemails():
-    """Recent recordings on the account = inbound voicemails (we don't
-    record outbound). Cached for 60s; caller numbers resolved per call."""
+    """Recent inbound voicemails. Outbound call recordings (started by
+    /api/record/start) are skipped. Cached for 60s; caller numbers resolved per call."""
     if time.time() - VM_CACHE["at"] < 60:
         return VM_CACHE["items"]
     out = []
     data = twilio_rest("Recordings.json", {"PageSize": 12})
     for rec in (data or {}).get("recordings", []):
+        if rec.get("source") == "StartCallRecordingAPI":
+            continue                              # our own outbound call recordings, not voicemail
         call_sid = rec["call_sid"]
         caller = VM_CACHE["callers"].get(call_sid)
         if caller is None:
             try:
                 call = twilio_rest(f"Calls/{call_sid}.json")
                 caller = call.get("from_formatted") or call.get("from") or "?"
-                if call.get("direction") != "inbound":
+                if call.get("direction") != "inbound" or str(call.get("from") or "").startswith("client:"):
                     caller = ""
             except Exception:
                 caller = "?"
@@ -654,8 +659,9 @@ def migrate():
         print(f"  migrated  {added} leads from CSV era into dialer.db")
 
 
-def run_listprep(src, outdir):
-    """Prep an uploaded file and import the result. Returns (result, err)."""
+def run_listprep(src, outdir, campaign_id=None, campaign_name=None, original_name=None):
+    """Prep an uploaded file and import the result into a campaign (a new
+    one named campaign_name when campaign_id is None). Returns (result, err)."""
     db.export_suppression(os.path.join(ROOT, "cache", "called_log.csv"),
                           os.path.join(ROOT, "dnc.csv"))
     cmd = [sys.executable, os.path.join(ROOT, "listprep.py"),
@@ -672,8 +678,13 @@ def run_listprep(src, outdir):
     newest = max(produced, key=os.path.getmtime) if produced else None
     if not newest:
         return None, ("prep produced no dialable list", tail)
-    added, refreshed = db.import_list_csv(newest)
-    return {"ok": True, "added": added, "refreshed": refreshed,
+    if not campaign_id:
+        campaign_id = db.create_campaign(campaign_name or db.campaign_name_for(original_name or newest),
+                                         DIALER.get("default_script_version") or "")
+    added, refreshed = db.import_list_csv(newest, campaign_id, original_name or os.path.basename(newest))
+    db.use_campaign(campaign_id)
+    return {"ok": True, "added": added, "refreshed": refreshed, "campaign_id": campaign_id,
+            "in_campaign": db.target_status()["open"],
             "source": os.path.basename(newest), "log": tail}, None
 
 
@@ -784,10 +795,19 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------- GET --
 
+    def _use_campaign(self, data=None):
+        """Which campaign this request is about: the X-Campaign header the
+        cockpit sends on every call, ?campaign= on download links, or none (all)."""
+        raw = self.headers.get("X-Campaign") or \
+            (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("campaign") or [""])[0] or \
+            (data or {}).get("campaign")
+        db.use_campaign(raw)
+
     def do_GET(self):
         if not self._authed():
             return
         route = urllib.parse.urlparse(self.path).path
+        self._use_campaign()
 
         if route in ("/", "/index.html"):
             with open(os.path.join(HERE, "index.html"), "rb") as fh:
@@ -821,10 +841,21 @@ class Handler(BaseHTTPRequestHandler):
                                    max_attempts=db.MAX_ATTEMPTS,
                                    voicemail_attempts=db.RETRY.get("voicemail_attempts"),
                                    script_versions=script_versions(),
-                                   session_defaults=DIALER.get("session") or {}))
+                                   session_defaults=DIALER.get("session") or {},
+                                   daily_target=db.DAILY_TARGET))
 
         if route == "/api/leads":
             return self._json({"leads": db.lead_list((query.get("q") or [""])[0][:80])})
+
+        if route == "/api/campaigns":
+            return self._json({"campaigns": db.campaigns_list(), "current": db.current_campaign()})
+
+        if route == "/api/target":
+            return self._json(db.target_status())
+
+        if route == "/api/analytics":
+            return self._json(db.analytics((query.get("period") or ["day"])[0],
+                                           (query.get("count") or [""])[0] or None))
 
         if route == "/api/callbacks":
             return self._json({"callbacks": db.callbacks_list()})
@@ -901,6 +932,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"missed": [], "error": str(e)})
 
+        if route.startswith("/api/recording/"):
+            if not DIALER.get("recording"):
+                return self._json({"error": "Recording is off on this server."}, 403)
+            sid = route.rsplit("/", 1)[-1].removesuffix(".mp3")
+            if not re.fullmatch(r"RE[0-9a-f]{32}", sid):
+                return self._json({"error": "not found"}, 404)
+            try:
+                audio = twilio_rest(f"Recordings/{sid}.mp3")
+                return self._send(200, audio, "audio/mpeg")
+            except Exception:
+                return self._json({"error": "recording unavailable (still processing, or deleted)"}, 404)
+
         if route.startswith("/api/voicemail/"):
             sid = re.sub(r"[^A-Za-z0-9]", "", route.rsplit("/", 1)[-1].removesuffix(".mp3"))
             try:
@@ -923,6 +966,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return
         route = urllib.parse.urlparse(self.path).path
+        self._use_campaign()
 
         if route == "/api/upload":
             return self._upload()
@@ -944,6 +988,8 @@ class Handler(BaseHTTPRequestHandler):
             extra = {k: data.get(k) for k in ("objections", "offered", "pain", "script_version",
                                               "number_used", "session_id", "dm_name", "email",
                                               "mobile", "ppap_per_year", "oem", "gatekeeper_name")}
+            extra["call_sid"] = data.get("call_sid") if re.fullmatch(r"CA[0-9a-f]{32}", str(data.get("call_sid") or "")) else ""
+            extra["recording_sid"] = data.get("recording_sid") if re.fullmatch(r"RE[0-9a-f]{32}", str(data.get("recording_sid") or "")) else ""
             if not isinstance(extra["objections"], list):
                 extra["objections"] = []
             if (db.OUTCOMES.get(code) or {}).get("booked"):
@@ -1022,6 +1068,48 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/session/end":
             return self._json(dict(db.session_end(int(data.get("id") or 0), data.get("active_seconds")), ok=True))
 
+        if route == "/api/record/start":
+            sid = str(data.get("call_sid") or "")
+            if not re.fullmatch(r"CA[0-9a-f]{32}", sid):
+                return self._json({"error": "No live call to record."}, 400)
+            if not DIALER.get("recording"):
+                return self._json({"error": "Recording is off (dialer.recording in config.yaml)."}, 400)
+            try:
+                rec = twilio_rest(f"Calls/{sid}/Recordings.json",
+                                  {"RecordingChannels": "dual", "RecordingTrack": "both"}, "POST")
+            except Exception as e:
+                return self._json({"error": f"Twilio would not start the recording: {e}"}, 502)
+            if not isinstance(rec, dict) or not rec.get("sid"):
+                return self._json({"error": "Twilio is not configured on this server."}, 502)
+            print(f"  RECORD    {sid} -> {rec['sid']}")
+            return self._json({"ok": True, "recording_sid": rec["sid"]})
+
+        if route == "/api/campaigns/new":
+            versions = script_versions()
+            script = data.get("script_version") if data.get("script_version") in versions else ""
+            cid = db.create_campaign(data.get("name"), script, data.get("daily_target") or 0)
+            return self._json({"ok": True, "id": cid, "campaigns": db.campaigns_list()})
+
+        if route == "/api/campaigns/update":
+            if data.get("script_version") and data["script_version"] not in script_versions():
+                return self._json({"error": "Unknown script version."}, 400)
+            db.update_campaign(int(data.get("id") or 0), data)
+            return self._json({"ok": True, "campaigns": db.campaigns_list()})
+
+        if route == "/api/campaigns/delete":
+            gone = db.delete_campaign(int(data.get("id") or 0))
+            return self._json({"ok": True, "deleted_leads": gone, "campaigns": db.campaigns_list()})
+
+        if route in ("/api/leads/delete", "/api/leads/restore", "/api/leads/remove"):
+            phones = [clean_phone(p) for p in (data.get("phones") or []) if clean_phone(p)][:2000]
+            if route == "/api/leads/delete":
+                n = db.delete_leads(phones, self._agent(data))
+            elif route == "/api/leads/restore":
+                n = db.restore_leads(phones)
+            else:
+                n = db.remove_from_campaign(phones, db.current_campaign())
+            return self._json({"ok": True, "count": n, "phones": phones})
+
         if route == "/api/numbers/park":
             number = "+" + re.sub(r"\D", "", str(data.get("number") or ""))
             db.set_parked(number, bool(data.get("parked")), "manual")
@@ -1081,7 +1169,11 @@ class Handler(BaseHTTPRequestHandler):
         with open(src, "wb") as fh:
             fh.write(raw)
 
-        result, err = run_listprep(src, outdir)
+        # Into an existing campaign (X-Campaign), or a new one named by
+        # X-Campaign-Name, or after the file.
+        new_name = urllib.parse.unquote(self.headers.get("X-Campaign-Name") or "").strip()
+        campaign_id = None if new_name else db.current_campaign()
+        result, err = run_listprep(src, outdir, campaign_id, new_name or db.campaign_name_for(name), name)
         if err:
             return self._json({"error": err[0], "log": err[1]}, 422)
         result["stats"] = db.stats()
@@ -1128,6 +1220,7 @@ def main():
     DIALER.update(load_dialer_config())
     apply_script_edits()
     db.configure(DIALER["outcomes"], DIALER.get("stats_timezone"), objection_labels())
+    db.DAILY_TARGET = int(DIALER.get("daily_target") or 150)
     migrate()
 
     parser = argparse.ArgumentParser(description="Run the dialer.")
@@ -1184,6 +1277,9 @@ def main():
           + f"; mobiles {'ALLOWED' if db.ALLOW_MOBILE else 'blocked'}")
     print(f"  carrier   {'twilio credentials found: real calls' if not simulator else 'not configured: simulator mode (see TWILIO.md)'}")
     print(f"  auth      {'basic auth on' if os.environ.get('DIALER_PASSWORD') else 'OFF: local use only'}")
+    if DIALER.get("recording") and args.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("DIALER_PASSWORD"):
+        DIALER["recording"] = False      # never record (or serve recordings) on a public server anyone can open
+        print("  recording OFF: this server is public and DIALER_PASSWORD is not set. Set it to turn recording on.")
     print(f"  serving   {args.host}:{args.port}\n")
 
     if not args.no_open and args.host in ("127.0.0.1", "localhost"):

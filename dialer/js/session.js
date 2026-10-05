@@ -1,14 +1,16 @@
 /* Session dialogs: the start form (target + script version) and the
    end-of-session card with that session's own funnel. */
 import { $, esc, icon, fmtPct, fmtHMS } from "./util.js";
-import { S, actions } from "./state.js";
+import { S, actions, campaignScript } from "./state.js";
 import { openModal, closeModal, closeX } from "./ui.js";
 
 export function sessionStartModal() {
   return new Promise((resolve) => {
     const d = S.cfg.session_defaults || {}, versions = S.cfg.script_versions || ["v1"];
     const lastVersion = localStorage.getItem("pd_script_version");
-    const chosen = versions.indexOf(lastVersion) >= 0 ? lastVersion : (S.cfg.default_script_version || versions[0]);
+    const fromCampaign = campaignScript();
+    const chosen = versions.indexOf(fromCampaign) >= 0 ? fromCampaign
+      : versions.indexOf(lastVersion) >= 0 ? lastVersion : (S.cfg.default_script_version || versions[0]);
     openModal(
       '<div class="dh"><div><h2>Start a power session</h2><p class="sub">Leads dial themselves after each wrap-up. ' +
       "The session ends at whichever target comes first, then shows you its funnel.</p></div>" + closeX() + "</div>" +
