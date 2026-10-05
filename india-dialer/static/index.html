@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>India dialer</title>
+<script>
+  (function () {
+    var t = "system";
+    try { t = localStorage.getItem("in_theme") || "system"; } catch (e) {}
+    if (t === "system") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-state="idle">
+
+<header class="top">
+  <button class="btn quiet rail-toggle" id="b-rail">Lists</button>
+  <span class="lamp" id="lamp" role="status"><i></i><span id="lamp-text">Idle</span></span>
+  <div class="session">
+    <button class="btn primary" id="b-session">Start session</button>
+    <div class="menu-wrap" id="pause-wrap" hidden>
+      <button class="btn" id="b-pause" aria-haspopup="menu" aria-expanded="false">Pause</button>
+      <div class="menu left" id="pause-menu" role="menu" hidden></div>
+    </div>
+    <span class="session-line" id="session-line" hidden></span>
+  </div>
+  <span class="clock-line" id="clock-line" role="status"></span>
+  <div class="tools">
+    <button class="btn quiet script-toggle" id="b-script">Script</button>
+    <button class="btn quiet" id="b-help" title="Keyboard (?)">Keys</button>
+    <div class="menu-wrap">
+      <button class="btn quiet" id="b-menu" aria-haspopup="menu" aria-expanded="false">Menu</button>
+      <div class="menu" id="main-menu" role="menu" hidden>
+        <button role="menuitem" data-act="scripts">Edit scripts and templates</button>
+        <button role="menuitem" data-act="import">Import a list</button>
+        <button role="menuitem" data-act="lead">Add a lead</button>
+        <button role="menuitem" data-act="phone">Phone page on this Wi-Fi</button>
+        <button role="menuitem" data-act="settings">Settings</button>
+        <hr>
+        <a role="menuitem" href="/api/export/tracker.csv?range=all" download>Tracker CSV, all time</a>
+        <a role="menuitem" href="/api/export/calls.csv?range=all" download>Every call, CSV</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="banner" id="banner" hidden><span id="banner-text"></span><button class="btn quiet sm" id="banner-x">Hide</button></div>
+
+<div class="panes">
+  <aside class="rail" id="rail" aria-label="Lists">
+    <nav class="railtabs" role="tablist">
+      <button role="tab" data-tab="queue" aria-selected="true">Queue <span class="n" id="n-queue"></span></button>
+      <button role="tab" data-tab="callbacks" aria-selected="false">Callbacks <span class="n" id="n-cb"></span></button>
+      <button role="tab" data-tab="samples" aria-selected="false">Samples <span class="n" id="n-samples"></span></button>
+      <button role="tab" data-tab="followups" aria-selected="false">Follow-ups <span class="n" id="n-fu"></span></button>
+      <button role="tab" data-tab="calls" aria-selected="false">Calls <span class="n" id="n-calls"></span></button>
+      <button role="tab" data-tab="stats" aria-selected="false">Stats</button>
+    </nav>
+    <section class="panel" id="p-queue">
+      <label class="search"><span class="sr">Search</span><input class="field" id="q" type="search" placeholder="Search company, person, city, number" autocomplete="off"></label>
+      <div class="list" id="l-queue"></div>
+    </section>
+    <section class="panel" id="p-callbacks" hidden><div class="list" id="l-callbacks"></div></section>
+    <section class="panel" id="p-samples" hidden><div class="list" id="l-samples"></div></section>
+    <section class="panel" id="p-followups" hidden><div class="list" id="l-followups"></div></section>
+    <section class="panel" id="p-calls" hidden><div class="list" id="l-calls"></div></section>
+    <section class="panel" id="p-stats" hidden><div class="list" id="l-stats"></div></section>
+  </aside>
+
+  <main class="centre" id="centre">
+    <article class="lead" id="lead" hidden>
+      <div class="hold" id="hold" hidden>
+        <p><b>Held: defence or aerospace check.</b> <span id="hold-text"></span></p>
+        <label class="check"><input type="checkbox" id="hold-clear"><span>Checked. No defence or restricted programmes: cleared to call</span></label>
+      </div>
+
+      <header class="lead-head">
+        <p class="meta" id="c-meta"></p>
+        <h1 class="company" id="c-company"></h1>
+        <p class="ask" id="c-ask"></p>
+        <p class="why" id="c-why"></p>
+      </header>
+
+      <section class="dial" id="dial">
+        <div class="dial-main">
+          <button class="number" id="c-number" title="Click to copy"></button>
+          <p class="number-meta" id="c-number-meta"></p>
+          <div class="dial-state" id="dial-state">
+            <span class="timer" id="timer">00:00</span>
+            <span class="timer-label" id="timer-label">Ready</span>
+          </div>
+          <p class="dial-hint" id="dial-hint"></p>
+          <div class="dial-acts" id="dial-acts">
+            <a class="btn go" id="b-dial" href="#">Dial <kbd>space</kbd></a>
+            <button class="btn" id="b-connected" hidden>Connected <kbd>c</kbd></button>
+            <button class="btn" id="b-noanswer" hidden>No answer <kbd>n</kbd></button>
+            <button class="btn" id="b-next-number" hidden>Try next number <kbd>t</kbd></button>
+            <button class="btn stop" id="b-end" hidden>End call <kbd>space</kbd></button>
+            <button class="btn quiet" id="b-skip">Skip <kbd>s</kbd></button>
+          </div>
+        </div>
+        <div class="qr-wrap" id="qr-wrap" title="Scan with your phone camera to dial"></div>
+      </section>
+
+      <div class="numbers" id="c-numbers"></div>
+
+      <p class="links" id="c-links"></p>
+      <blockquote class="last" id="c-last" hidden></blockquote>
+
+      <div class="notes-box">
+        <label class="lbl" for="notes">Notes</label>
+        <textarea class="field" id="notes" rows="2" placeholder="Saved with the outcome"></textarea>
+      </div>
+      <div class="discovery" id="discovery">
+        <div><label class="lbl" for="d-vol">Drawings a month</label><input class="field" id="d-vol" data-call="actual_drawings_month" maxlength="20" autocomplete="off"></div>
+        <div><label class="lbl" for="d-method">How they do it today</label><input class="field" id="d-method" data-call="current_method" list="methods" maxlength="120" autocomplete="off"></div>
+        <div><label class="lbl" for="d-soft">Software</label><input class="field" id="d-soft" data-call="software_used" maxlength="120" autocomplete="off"></div>
+        <div class="wide"><label class="lbl" for="d-pain">Pain, in their words</label><input class="field" id="d-pain" data-call="pain" maxlength="300" autocomplete="off"></div>
+        <div><label class="lbl" for="d-lang">Language</label><select class="field" id="d-lang" data-call="language_pref"></select></div>
+      </div>
+      <datalist id="methods"><option value="Manual"><option value="Software"><option value="Outsourced"></datalist>
+
+      <section class="wrap" id="wrap" hidden aria-label="Wrap-up">
+        <div class="wrap-h"><h2 id="wrap-title">How did it go?</h2><span class="muted" id="wrap-sub"></span></div>
+        <div class="outcomes" id="outcomes"></div>
+        <div class="l2" id="l2" hidden></div>
+      </section>
+    </article>
+
+    <div class="empty" id="empty">
+      <h1 id="e-title">Loading</h1>
+      <p id="e-text"></p>
+      <div class="acts" id="e-acts"></div>
+    </div>
+  </main>
+
+  <aside class="right" id="right" aria-label="Script">
+    <section id="script-sec">
+      <div class="sect-h">
+        <h2>Script <span class="muted" id="script-ver"></span></h2>
+        <span class="sect-tools">
+          <label class="check small"><input type="checkbox" id="hinglish"><span>Hinglish</span></label>
+          <button class="btn quiet sm" id="b-obj" title="Objections (o)">Objections</button>
+          <button class="btn quiet sm" id="b-edit">Edit</button>
+        </span>
+      </div>
+      <div id="treebox">
+        <div class="tabs-text" role="tablist" id="flow-tabs"></div>
+        <div class="crumbs" id="crumbs"></div>
+        <div class="step" id="step"></div>
+        <div class="step-next" id="step-next"></div>
+        <div class="step-nav" id="step-nav"><button class="btn quiet sm" id="b-prev">Back</button><button class="btn quiet sm" id="b-next">Next</button></div>
+      </div>
+      <div id="objpanel" hidden>
+        <div class="obj-head"><input class="field" id="obj-q" type="search" placeholder="What did they just say?" autocomplete="off"><button class="btn quiet sm" id="obj-close">Close</button></div>
+        <p class="objrule" id="obj-rule"></p>
+        <div id="obj-list"></div>
+      </div>
+    </section>
+    <section>
+      <div class="sect-h"><h2>History <span class="muted" id="h-count"></span></h2></div>
+      <div class="timeline" id="timeline"></div>
+    </section>
+  </aside>
+</div>
+
+<footer class="statsbar" id="statsbar" aria-label="Today's numbers">
+  <div class="tabs-text" id="sb-range">
+    <button data-r="today" aria-selected="true">Today</button><button data-r="week" aria-selected="false">Week</button><button data-r="all" aria-selected="false">All</button>
+  </div>
+  <div class="sb-cells" id="sb-cells"></div>
+  <button class="btn quiet sm" id="sb-more">Details</button>
+</footer>
+
+<div class="overlay" id="modal" hidden><div class="dialog" id="modal-box" role="dialog" aria-modal="true"></div></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

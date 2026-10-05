@@ -21,16 +21,17 @@
 >
 > **State lives in SQLite** (`/data/dialer.db` on the volume; `dialer.db`
 > at repo root locally). The server owns the queue: atomic per-agent lead
-> checkout, lead-local calling-hours enforcement (wk 9:00–20:30 / wknd
-> 10:00–18:00, override via `WINDOW_WEEKDAY="9-20.5"`), automatic retry of
-> NO_ANSWER/VOICEMAIL after 24 h up to 5 attempts, scheduled callbacks
-> that jump the queue when due, per-day dial cap (150) computed from
-> actual history, notes on every disposition, and `/api/dnc.csv` export.
+> checkout, prospect-local power and secondary calling windows (weekdays,
+> never 11:30 to 13:30, never outside 08:00 to 18:00; `dialer.windows` in
+> `config.yaml`), a six-attempt retry cadence over three weeks that
+> alternates mornings and afternoons, scheduled callbacks that jump the
+> queue when due, a caller-ID pool with per-number daily caps computed
+> from actual history, notes on every disposition, and `/api/dnc.csv`.
 >
 > **Inbound**: the number's voice URL is the `/inbound` Function — return
 > calls ring the `agent1` browser client (screen-pop from the DB via
 > `/api/lookup`); after 15 s unanswered they get the `VM_GREETING` and
-> record a voicemail, which shows up in the UI's Voicemails rail
+> record a voicemail, which shows up in the UI's Inbox tab, next to missed calls
 > (played through the server proxy `/api/voicemail/<sid>.mp3`).
 >
 > **VM drop**: the Drop-VM button redirects the callee leg to a spoken
@@ -95,6 +96,44 @@ on this side — only the TwiML must be hosted on Twilio (a Function).
    traffic gets labelled spam fast. Also register for **CNAM** so your
    business name shows on caller ID.
 
+## 1b. Caller-ID pool and the `pawan` seat (PPAP campaign)
+
+Two Twilio-side changes go with the local-presence pool in `config.yaml`
+(`numbers.pool`). Neither can be made from this repo; both are in the console.
+
+**Let the browser choose among your own numbers.** The `/dial` Function used
+to force one `CALLER_ID`. Replace the `callerId` line so it accepts a number
+only when it is on an allow-list you control, and falls back otherwise. A
+stolen token still cannot spoof an arbitrary caller ID.
+
+```js
+const allowed = (context.CALLER_IDS || context.CALLER_ID || "")
+  .split(",").map((n) => n.trim()).filter(Boolean);
+const asked = (event.CallerId || "").trim();
+const dial = twiml.dial({
+  callerId: allowed.includes(asked) ? asked : allowed[0],
+  answerOnBridge: true,
+  timeout: 25,
+});
+```
+
+Set the Function's `CALLER_IDS` variable to the same numbers as
+`numbers.pool`, comma separated, E.164. Every number needs the Trust Hub,
+SHAKEN/STIR and CNAM registration from step 4. The dialer enforces 30 dials a
+day per number for its first 21 days and 150 after, parks a number whose 7-day
+pickup rate falls under 15% across 100+ dials, and shows all of it in the
+Numbers tab.
+
+**Ring the right seat on return calls.** The cockpit seat is now `pawan`. Set
+the `/inbound` Function's `AGENT_CLIENT` variable to `pawan`, or return calls
+keep ringing `agent1` and go to voicemail.
+
+**Moving to Telnyx later.** The cockpit talks to the carrier only through
+`dialer/js/carrier.js` (connect, hang up, mute, digits, incoming). A Telnyx
+WebRTC adapter there, plus a token route next to `/api/token` in `serve.py`,
+is the whole change. Voicemail drop and the inbox use Twilio REST calls in
+`serve.py` and would need Telnyx equivalents.
+
 ## 2. Run
 
 ```bash
@@ -115,11 +154,12 @@ browser asks for microphone access on the first dial — allow it.
 
 | Twilio event | UI |
 |---|---|
+| session countdown hits 0, or `space` | `connect()` issued |
 | `connect()` issued | DIALING, lamp "Dialing" |
 | `ringing` | lamp "Ringing" |
 | `accept` (human answered) | LIVE, timer starts, connect counted |
-| `disconnect` while LIVE | wrap-up → disposition grid |
-| `disconnect`/`cancel` while DIALING | disposition grid (defaults read as no-answer) |
+| `disconnect` while LIVE | wrap-up → outcome grid |
+| `disconnect`/`cancel` while DIALING | outcome grid, *No answer* suggested on `enter` |
 | Hang up / space while DIALING | abandons the ringing call |
 
 Dispositions still post to `/api/disposition` and land in `called_log.csv`
@@ -134,5 +174,9 @@ and `dnc.csv` — nothing about the suppression loop changed.
   monitor spam labelling yourself (Free Caller Registry, Hiya) and stay
   under the 150 dials/day/number cap the UI already enforces.
 - Recording: add `record: "record-from-answer-dual"` to the `dial()` options
-  in the Function if you want it — the script's recording disclosure line is
-  already mandatory in the UI.
+  in the Function if you want it, then set `dialer.recording: true` in
+  `config.yaml` so the agent sees a REC badge on live calls and a
+  "Say first" recording-disclosure prompt above the opener. Nothing is ever
+  played to the callee automatically: with `answerOnBridge` the agent is live
+  from the moment the lead picks up. The one automated voice you may hear is
+  Twilio's own trial-account notice, which goes away when the account is upgraded.

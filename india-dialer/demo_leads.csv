@@ -1,0 +1,10 @@
+#,tier,company,city,state,type,phone,phone_source,ask_for,why,est_drawings_month,website,flags,source
+1,A,Sahyadri Precision Components,Pune,Maharashtra,Auto/engineering exporter,+91 98220 10001 / 020 2712 3456,demo,Rohit Kulkarni (Quality Head),Machined housings and brackets for two OEMs; every new part number needs a ballooned drawing for the FAI,500+,https://example.com,,demo
+2,A,Kaveri Metrology Labs,Coimbatore,Tamil Nadu,CMM metrology / inspection outsourcing,+91 94430 20002,demo,Lab Manager,CMM inspection bureau; each job starts from the customer's drawing,300-800,https://example.com,,demo
+3,A,Deccan Sourcing Network,Hyderabad,Telangana,manufacturing sourcing platform,+91 040 4455 6677 / 7788,demo,VP Quality,Routes customer parts to 200 partner shops; quality docs for every order,500+,https://example.com,,demo
+4,B,Narmada Forgings,Rajkot,Gujarat,Maharashtra,0281 238 7482,demo,Quality Manager,Closed-die forgings for tractors and pumps,150-400,https://example.com,,demo
+5,B,Konkan Castings,Kolhapur,MH,Maharashtra,+91 231 267 2533,demo,Suresh Patil (Plant Head),Grey iron castings with an in-house CMM room,200-500,https://example.com,,demo
+6,B,Shivalik Aero Parts,Bengaluru,Karnataka,aerospace machining,+91 80 4116 2000,demo,NPD Head,Precision machining for aerospace customers,100+,https://example.com,DEFENSE/AERO CHECK before pitching,demo
+7,B,Malwa Auto Components,Pithampur,MP,Auto/engineering exporter,+91-7292-403600,demo,Quality Head,Tier-2 stampings for a Pune OEM,100-250,https://example.com,,demo
+8,C,Brahmaputra Tool Room,Guwahati,Assam,tool room,,demo,Head of Production,Press tools and moulds; no number found yet,50-150,https://example.com,,demo
+9,C,Coastal Fasteners,Chennai,TN,Auto/engineering exporter,+91 44 2625 4376,demo,Supplier Quality Manager,Fasteners for two-wheeler makers,80+,https://example.com,,demo

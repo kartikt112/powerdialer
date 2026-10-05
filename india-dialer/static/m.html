@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f3efe6">
+<title>Dialer phone</title>
+<style>
+  @font-face { font-family: "Atkinson Next"; font-weight: 200 800; font-display: swap; src: url(/static/fonts/next-latin.woff2) format("woff2"); }
+  @font-face { font-family: "Atkinson Mono"; font-weight: 200 800; font-display: swap; src: url(/static/fonts/mono-latin.woff2) format("woff2"); }
+  :root { --bg: #f3efe6; --ink: #171b26; --ink-2: #3b4150; --ink-3: #6b7080; --line: #d9d3c5; --coral: #d93d1c; --coral-fill: #e8492a;
+          --mint: #16704b; --marigold: #8f5a00; --on-fill: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161c; --ink: #eee9dd; --ink-2: #c9c4b8; --ink-3: #8f8b82; --line: #2c2f38; --coral: #ff7454; --mint: #4cc08a; --marigold: #f2b134; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.45 "Atkinson Next", system-ui, sans-serif;
+         padding: max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); }
+  .state { font-size: 13px; color: var(--ink-3); display: flex; justify-content: space-between; }
+  .state b { color: var(--ink); }
+  body[data-state="ringing"] .state b { color: var(--marigold); }
+  body[data-state="connected"] .state b { color: var(--mint); }
+  h1 { font-size: 26px; line-height: 1.2; margin: 18px 0 2px; }
+  .person { color: var(--ink-2); margin: 0; }
+  .num { font: 700 34px/1.1 "Atkinson Mono", ui-monospace, monospace; letter-spacing: .02em; margin: 26px 0 4px; }
+  .kind { font-size: 13px; color: var(--ink-3); margin: 0 0 18px; }
+  .call { display: flex; align-items: center; justify-content: center; height: 64px; border-radius: 2px; background: var(--coral-fill);
+          color: var(--on-fill); font-size: 20px; font-weight: 700; text-decoration: none; }
+  .call[aria-disabled="true"] { opacity: .35; pointer-events: none; }
+  .timer { font: 400 20px "Atkinson Mono", monospace; color: var(--ink-3); text-align: center; margin-top: 14px; }
+  .others { margin-top: 26px; border-top: 1px solid var(--line); }
+  .others a { display: flex; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none;
+              font-family: "Atkinson Mono", monospace; }
+  .others a span { font-family: "Atkinson Next", sans-serif; font-size: 13px; color: var(--ink-3); }
+  .idle { color: var(--ink-3); margin-top: 40px; }
+  .note { font-size: 12.5px; color: var(--ink-3); margin-top: 28px; }
+</style>
+</head>
+<body data-state="idle">
+  <p class="state"><span>Laptop: <b id="st">connecting</b></span><span id="age"></span></p>
+  <div id="card" hidden>
+    <h1 id="co"></h1>
+    <p class="person" id="who"></p>
+    <p class="num" id="num"></p>
+    <p class="kind" id="kind"></p>
+    <a class="call" id="call" href="#">Call</a>
+    <p class="timer" id="timer"></p>
+    <div class="others" id="others"></div>
+  </div>
+  <p class="idle" id="idle">Waiting for a lead on the laptop.</p>
+  <p class="note">Tap Call, talk, then log the outcome on the laptop. This page never records or sends anything.</p>
+<script>
+  (function () {
+    var LABEL = { idle: "idle", ready: "ready", ringing: "ringing", connected: "on the call", wrap: "wrap-up" };
+    var last = null, since = null, fails = 0;
+    function $(id) { return document.getElementById(id); }
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    function render(d) {
+      var has = d && d.company;
+      document.body.setAttribute("data-state", (d && d.state) || "idle");
+      $("st").textContent = LABEL[(d && d.state) || "idle"] || "idle";
+      $("card").hidden = !has; $("idle").hidden = !!has;
+      if (!has) return;
+      $("co").textContent = d.company;
+      $("who").textContent = d.person ? "Ask for " + d.person : "";
+      $("num").textContent = d.number || "No number";
+      $("kind").textContent = d.kind || "";
+      $("call").href = d.dial ? "tel:" + d.dial : "#";
+      $("call").setAttribute("aria-disabled", d.dial ? "false" : "true");
+      $("others").innerHTML = "";
+      (d.others || []).forEach(function (o) {
+        var a = document.createElement("a");
+        a.href = "tel:" + o.dial;
+        a.textContent = o.number;
+        var s = document.createElement("span"); s.textContent = o.kind || ""; a.appendChild(s);
+        $("others").appendChild(a);
+      });
+      since = d.timer_from ? new Date(d.timer_from) : null;
+    }
+    function tick() {
+      if (since && (document.body.getAttribute("data-state") === "ringing" || document.body.getAttribute("data-state") === "connected")) {
+        var s = Math.max(0, Math.floor((Date.now() - since) / 1000));
+        $("timer").textContent = pad(Math.floor(s / 60)) + ":" + pad(s % 60);
+      } else $("timer").textContent = "";
+    }
+    function poll() {
+      fetch("/api/m/current", { credentials: "same-origin", cache: "no-store" }).then(function (r) {
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      }).then(function (d) {
+        fails = 0;
+        var key = JSON.stringify(d);
+        if (key !== last) { last = key; render(d); }
+        $("age").textContent = "";
+      }).catch(function () {
+        fails++;
+        if (fails > 2) { $("st").textContent = "not reachable"; $("age").textContent = "same Wi-Fi?"; }
+      });
+    }
+    poll(); setInterval(poll, 1500); setInterval(tick, 500);
+  })();
+</script>
+</body>
+</html>

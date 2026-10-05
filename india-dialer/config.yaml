@@ -1,0 +1,462 @@
+# India ballooning dialer. Pawan dials on his own phone; this app runs the
+# queue, the script, the wrap-up, follow-ups and the numbers.
+#
+# Everything the cockpit shows or says lives in this file. No em dashes in
+# anything user-facing: tests/test_config.py fails the build if one appears.
+
+brand:
+  name: PXL Kraft
+  website: https://pxlkraft.com
+  caller: Pawan
+
+agent: {id: pawan, name: Pawan}
+
+# The offer, as the scripts and templates state it. Keep claims true: no
+# engineer review on this offer, and no security feature that is not live.
+offer:
+  bulk: "20,000 ballooned drawings for 1 lakh rupees, about 5 rupees a drawing"
+  trial: "5 of your own drawings, ballooned free, so you can check the accuracy yourself"
+
+# ---------------------------------------------------------------- import --
+import:
+  default_tier: B            # for lists without a tier column (IndiaMART, LinkedIn exports)
+  # Source column -> field. Header match is case- and punctuation-insensitive.
+  # Every column listed under `phone` is read, so a list with separate Phone
+  # and Mobile columns keeps both numbers.
+  aliases:
+    tier: [tier, priority, grade]
+    company: [company, company name, organization, organisation, account name, firm name, business name]
+    city: [city, town, location city]
+    state: [state, region, state/region, location state]
+    location: [location, geography, address]
+    type: [type, category, segment, business type, nature of business, industry]
+    phone: [phone, phone number, telephone, contact number, landline, mobile, mobile number, primary phone, alternate number, other phone,
+            alternate mobile, alternate phone, alternate contact, mobile 2, phone 2, phone no, mobile no, contact no, work phone, office phone, whatsapp number]
+    phone_source: [phone_source, phone source, number source]
+    ask_for: [ask_for, ask for, contact person, contact, contact name, decision maker, person]
+    first_name: [first name, firstname]
+    last_name: [last name, lastname]
+    dm_title: [title, designation, job title, position]
+    why: [why, reason, notes, description, about, remarks, comments, requirement, product, products]
+    est_drawings_month: [est_drawings_month, est drawings month, drawings per month, est volume, volume]
+    website: [website, url, web site, company website, domain]
+    flags: [flags, flag, warnings]
+    source: [source, lead source]
+    email: [email, email address, e-mail]
+    whatsapp: [whatsapp, whatsapp number]
+    language_pref: [language, language_pref, language pref]
+
+  # A lead whose flags contain any of these is HELD: imported, shown with a
+  # red banner, and not dialled until Pawan ticks "cleared" on it. Exact
+  # phrases only: "no ITAR/defence indication found" must not trigger a hold.
+  hold_if_flags_contain: ["DEFENSE/AERO CHECK"]
+
+  # The segment comes from `type` (first rule whose words appear wins), then
+  # the company name. Rows where `type` is really a state name or a stray
+  # letter and the name says nothing use `why`,
+  # in `why_priority` order: a tool room or a manufacturer that mentions its
+  # own CMM is not an inspection lab.
+  segments:
+    - {label: Marketplace, words: [marketplace, sourcing platform, manufacturing-as-a-service, manufacturing as a service, ems sourcing]}
+    - {label: Inspection lab, words: [metrology, cmm, calibration, nabl, 3d scanning, inspection outsourcing, inspection services, inspection service, testing lab, dimensional lab]}
+    - {label: PPAP consultancy, words: [consultancy, consultant, ppap documentation, quality documentation]}
+    - {label: Engineering services, words: [kpo, engineering services, engineering-services, cad drafting, cad services, drafting, gcc, global capability, delivery center, delivery centre, design center, design centre, technology center, technology centre, centre of excellence, coe]}
+    - {label: OEM supplier quality, words: [supplier quality]}
+    - {label: Tool room, words: [tool room, tool design, tooling institute, tooling]}
+    - {label: Exporter / manufacturer, words: [exporter, export, forging, forgings, casting, castings, foundry, machining, machined, tier-1, tier 1, auto, automotive, component, components, press, stamping, precision, manufacturer, manufacturing, fasteners, bearings, pistons, medical-device, medical device, rail, rolling-stock, rolling stock, metal-injection, mim, moulds, moulding, molding, parts, equipment]}
+  why_priority: [Marketplace, PPAP consultancy, Engineering services, OEM supplier quality, Exporter / manufacturer, Tool room, Inspection lab]
+  default_segment: Other
+
+states:
+  AP: Andhra Pradesh
+  CG: Chhattisgarh
+  DL: Delhi
+  GA: Goa
+  GJ: Gujarat
+  HR: Haryana
+  HP: Himachal Pradesh
+  JH: Jharkhand
+  KA: Karnataka
+  KL: Kerala
+  MH: Maharashtra
+  MP: Madhya Pradesh
+  OR: Odisha
+  OD: Odisha
+  PB: Punjab
+  RJ: Rajasthan
+  TN: Tamil Nadu
+  TS: Telangana
+  TG: Telangana
+  UK: Uttarakhand
+  UP: Uttar Pradesh
+  WB: West Bengal
+  NCR: Haryana
+
+# --------------------------------------------------------------- scoring --
+# Raw points -> percentile rank 0-99 across every dialable lead. Held leads
+# are scored but stay out of the queue until cleared.
+scoring:
+  tier: {A: 30, B: 15, C: 5}
+  volume:                    # est drawings a month; the low end of a range counts
+    - {min: 500, points: 25}
+    - {min: 200, points: 15}
+    - {min: 50, points: 8}
+  mobile: 5                  # the lead has at least one mobile number
+  named_dm: 10               # a person's name, not just a role, to ask for
+  interested_before: 40      # an earlier call ended interested, sample or demo
+
+# ------------------------------------------------------- calling hours (IST) --
+# Cold dials only in power and soft windows. Callbacks the DM asked for and
+# sample follow-up calls may ring any time inside `hard`. Nothing, ever,
+# outside `hard` (TRAI hours). Sundays and holidays: no cold dials.
+calling:
+  power:   [["10:00", "13:00"], ["14:30", "17:30"]]
+  soft:    [["17:30", "18:30"]]
+  blocked: [["13:00", "14:30"]]          # lunch
+  hard:    ["09:00", "21:00"]
+  saturday_note: "Saturday: many plants work a half day"
+  # Gazetted holidays, October to December 2026. Add plant shutdowns (the
+  # days around Diwali, local festivals) as you learn them.
+  holidays:
+    - {date: 2026-10-02, name: Gandhi Jayanti}
+    - {date: 2026-10-20, name: Dussehra}
+    - {date: 2026-11-08, name: Diwali}
+    - {date: 2026-11-24, name: Guru Nanak Jayanti}
+    - {date: 2026-12-25, name: Christmas}
+
+# Up to 5 attempts over about two weeks. Never the same day on the same
+# number (another number from the lead is fine); mornings and afternoons
+# alternate; Sundays and holidays are skipped. After 5 attempts without ever
+# reaching the DM the lead is EXHAUSTED and moves to the WhatsApp / LinkedIn
+# only list.
+retry:
+  max_attempts: 5
+  gap_days: [1, 2, 3, 4]                 # days to wait after attempt 1, 2, 3, 4
+  alternate_halves: true
+
+dialing:
+  ring_no_answer_seconds: 40             # ringing this long with no "connected" suggests No answer
+  power_countdown_seconds: 5             # power mode: pause before the next lead's dial screen
+  callback_notify_minutes: 5             # browser notification this long before a callback is due
+  skip_hours: 2                          # a skipped lead comes back to the queue after this long
+
+# -------------------------------------------------------------- wrap-up --
+# Level 1, keys 1-9 then 0, in this order. Flags stamped onto the call row:
+#   connect     someone picked up                    (Connects)
+#   dm          the decision maker was on the line   (DMs reached)
+#   pitched     the DM heard the pitch               (DMs pitched)
+#   interested  they want to see it                  (Interested)
+#   sample      they agreed to send 5 drawings       (Samples asked)
+#   demo        a demo is booked                     (Demos booked)
+# kind: final | retry | callback | followup (opens a sample card) | dnc
+# SAMPLE_REQ, DEMO_BOOKED, CALLBACK, NO_ANSWER and DNC are load-bearing keys.
+outcomes:
+  - {key: SAMPLE_REQ,    label: Agreed to send 5 drawings,              kind: followup, connect: true,  dm: true, pitched: true, interested: true, sample: true, tone: good}
+  - {key: DEMO_BOOKED,   label: Demo booked,                            kind: final,    connect: true,  dm: true, pitched: true, interested: true, demo: true, tone: good}
+  - {key: CALLBACK,      label: Callback (DM asked),                    kind: callback, connect: true,  dm: true, pitched: true}
+  - {key: INTERESTED_NO, label: "Interested, no next step",             kind: retry,    connect: true,  dm: true, pitched: true, interested: true}
+  - {key: PITCHED_NO,    label: "Pitched, not a fit",                   kind: final,    connect: true,  dm: true, pitched: true}
+  - {key: GATEKEEPER,    label: Reception blocked or transferred nowhere, kind: retry,  connect: true}
+  - {key: DM_NOT_IN,     label: "DM not in, got a name or number",      kind: retry,    connect: true}
+  - {key: NO_ANSWER,     label: No answer / busy / switched off,        kind: retry,    connect: false}
+  - {key: BAD_NUMBER,    label: Wrong number / not in service,          kind: final,    connect: false}
+  - {key: DNC,           label: Asked not to call,                      kind: dnc,      connect: true, tone: danger}
+
+# Level 2 objection chips, in the order they show.
+objection_tags:
+  - {key: NOT_INTERESTED,          label: Not interested}
+  - {key: BUSY,                    label: Busy right now}
+  - {key: SEND_DETAILS_WHATSAPP,   label: Send details on WhatsApp}
+  - {key: SEND_EMAIL,              label: Send an email}
+  - {key: PRICE_ASK,               label: Asked the price}
+  - {key: TOO_EXPENSIVE,           label: Too expensive}
+  - {key: ALREADY_HAVE_SOFTWARE,   label: Already have software}
+  - {key: DO_IT_MANUALLY_FINE,     label: Manual is fine}
+  - {key: CONFIDENTIAL_DRAWINGS,   label: Drawings are confidential}
+  - {key: LOW_VOLUME,              label: Low volume}
+  - {key: NEED_BOSS_APPROVAL,      label: Needs the boss}
+  - {key: OTHER,                   label: Other}
+
+# Sample and demo pipeline, left to right on the Samples rail.
+pipeline:
+  stages:
+    - {key: demo,      label: Demo booked}
+    - {key: asked,     label: Asked}
+    - {key: received,  label: Drawings in}
+    - {key: delivered, label: Delivered}
+    - {key: feedback,  label: Feedback}
+    - {key: quote,     label: Quote sent}
+    - {key: won,       label: Won}
+    - {key: lost,      label: Lost}
+
+# Rate targets for the stats bar. At or above: good. Within 70% of it: warn.
+# Below that: bad. Rates on fewer than `min_base` calls stay grey.
+targets:
+  min_base: 10
+  rates:
+    - {key: connect_rate,  label: Connect rate,          num: connects,         den: dials,            target: 0.30}
+    - {key: dm_reach,      label: DM reach,              num: dms_reached,      den: connects,         target: 0.40}
+    - {key: pitch_rate,    label: Pitch rate,            num: pitched,          den: dials,            target: 0.15}
+    - {key: interest_rate, label: Interest rate,         num: interested,       den: pitched,          target: 0.30}
+    - {key: sample_rate,   label: Sample rate,           num: samples_asked,    den: dials,            target: 0.03, star: true}
+    - {key: follow_through, label: Sample follow-through, num: samples_received, den: samples_asked,   target: 0.60}
+    - {key: win_rate,      label: Win rate,              num: won,              den: samples_delivered, target: 0.25}
+  positive_conversations_per_day: 10
+
+pause_reasons: [Break, Lunch, Research, Other]
+default_script_version: v1
+
+# ---------------------------------------------------------------- scripts --
+# The call tree (right column). Imperium shape: reception, permission, pull
+# pitch, qualify, ask, book, objections on `o`. Arrow keys walk a flow.
+#
+# Tokens: {dm_first} {dm_name} {company} {agent} {city} {whatsapp} {email}
+#         {demo_when} {website}
+#   {?dm_name}shown when known{/dm_name}   {!dm_name}shown when not{/dm_name}
+#   **bold** works. No em dashes.
+# step keys:
+#   say      English lines. The first is the main one, the rest follow on.
+#   say_hi   Hinglish lines, same order. The Hinglish toggle shows them.
+#   cue      stage direction, grey.   rules   reminders, grey list.
+#   chips    questions to pick from (qualify). `field` writes the answer.
+#   capture  input fields shown in the step: [whatsapp, demo_at, ...]
+#   branches [{label, to, outcome}]   `outcome` suggests the wrap-up pick.
+#   when / unless   show the step only when a token is set / empty.
+# Versions can `extends:` another and override single steps, for A/B tests:
+# sessions pick a version and the stats split by it.
+scripts:
+  tree:
+    v1:
+      order:
+        call: [reception_known, reception_unknown, permission, pitch, qualify, ask, book]
+        callback: [callback_open, pitch, qualify, ask, book]
+        follow_up: [follow_up_open, ask, book]
+      steps:
+        reception_known:
+          title: Reception
+          when: dm_name
+          say:
+            - "Hi, can I speak with {dm_first} please? It's Pawan."
+          say_hi:
+            - "Hi, {dm_first} ji se baat ho sakti hai? It's Pawan."
+            - "(If asked \"kis baare mein\") Drawing inspection ke baare mein, he'll know."
+          cue: "Short, warm, then quiet. If asked what it's about: \"About drawing inspection, he'll know.\""
+          rules:
+            - Never pitch the reception.
+            - "Not in? Ask for their direct mobile and a good time, then pick DM not in."
+        reception_unknown:
+          title: Reception
+          unless: dm_name
+          say:
+            - "Hi, I need to speak with whoever handles quality, the person who makes the inspection reports and ballooned drawings. Who would that be?"
+            - "What's their name? Can you connect me?"
+          say_hi:
+            - "Hi, mujhe quality dekhne wale se baat karni thi, jo inspection reports aur ballooned drawings banate hain. Woh kaun honge?"
+            - "Unka naam kya hai? Aap connect kar denge?"
+          cue: "Type the name into Decision maker in the wrap-up. If they're not in: \"Could I have their direct mobile? I'll call at a better time.\""
+          capture: [dm_name, dm_mobile]
+        callback_open:
+          title: Callback
+          say:
+            - "Hi {dm_first}, Pawan here. You'd asked me to call back around now, is this still a good time?"
+          say_hi:
+            - "Hi {dm_first} ji, Pawan bol raha hoon. Aapne is time call karne ko kaha tha, abhi baat ho sakti hai?"
+          cue: "If it's still bad: book a new time (Callback) and keep it short."
+        follow_up_open:
+          title: Sample follow-up
+          say:
+            - "Hi {dm_first}, Pawan from PXL Kraft. Just checking on the 5 drawings, did you get a chance to send them?"
+            - "Once they're in, you get them back ballooned the same day, and you check the accuracy yourself."
+          say_hi:
+            - "Hi {dm_first} ji, PXL Kraft se Pawan. Woh 5 drawings ke baare mein, bhej paye aap?"
+            - "Aate hi same day ballooned wapas bhej denge, accuracy aap khud check kar lena."
+          cue: "Delivered already? Ask how the accuracy looked, then move the card on the Samples rail."
+        permission:
+          title: Permission
+          say:
+            - "Hi {dm_first}, Pawan here. I'll be honest, this is a sales call. Give me 30 seconds and then you decide, fair?"
+          say_hi:
+            - "Hi {dm_first} ji, Pawan here. Seedha bolta hoon, yeh sales call hai. Bas 30 seconds dijiye, phir aap decide kariye, theek hai?"
+          cue: "Wait for the yes. A laugh counts."
+        pitch:
+          title: Pull pitch
+          say:
+            - "We've built the fastest AI ballooning tool out there. You upload a drawing and every characteristic is numbered in seconds, ready for your FAI or inspection report. Teams doing this by hand usually spend 20 to 40 minutes a drawing. I'm guessing at {company} that's all under control?"
+          say_hi:
+            - "Humne sabse fast AI ballooning tool banaya hai. Drawing upload karo, har characteristic seconds mein number ho jaata hai, FAI ya inspection report ke liye ready. Haath se karne wali teams ko ek drawing pe 20 se 40 minute lagte hain. {company} mein toh sab control mein hoga?"
+          cue: "Then stop talking. Let them correct you."
+          branches:
+            - {label: "\"All under control\"", to: qualify}
+            - {label: "They lean in: go to the ask", to: ask}
+        qualify:
+          title: Qualify
+          say:
+            - "Fair enough. Quick one so I don't waste your time..."
+          say_hi:
+            - "Theek hai. Ek quick sawaal, taaki aapka time waste na ho..."
+          cue: "Use 2 or 3. Tap a question once you've asked it."
+          chips:
+            - {q: "Roughly how many drawings do you balloon in a month?", q_hi: "Mahine mein roughly kitni drawings balloon karte ho?", field: actual_drawings_month}
+            - {q: "Who does it today, and in what software?", q_hi: "Abhi kaun karta hai, aur kis software mein?", field: software_used}
+            - {q: "How long does one drawing take?", q_hi: "Ek drawing mein kitna time lagta hai?", field: pain}
+            - {q: "Customer formats, your own or theirs?", q_hi: "Format customer ka hota hai ya aapka apna?"}
+          rules:
+            - "Low volume? Open Objections, Low volume, and ask for a referral."
+        ask:
+          title: Ask
+          say:
+            - "Easiest way to judge it: send me 5 of your drawings on WhatsApp, we'll send them back ballooned, and you check the accuracy yourself. Free. Which number should I send the details to?"
+          say_hi:
+            - "Judge karne ka sabse easy tarika: 5 drawings WhatsApp pe bhejiye, hum ballooned wapas bhejenge, aur accuracy aap khud check kariye. Free hai. Details kis number pe bhejun?"
+          cue: "Type the WhatsApp number. Rather see it live? Go to Book."
+          capture: [whatsapp, email]
+          branches:
+            - {label: "Gave a WhatsApp or email", outcome: SAMPLE_REQ}
+            - {label: "Rather see it live", to: book}
+        book:
+          title: Book a demo
+          say:
+            - "Let's do 15 minutes on a screen share. What works, {demo_when}?"
+            - "Done. I'll send a WhatsApp to confirm, is this the right number?"
+          say_hi:
+            - "15 minute ka screen share kar lete hain. {demo_when} chalega?"
+            - "Done. Confirm karne ke liye WhatsApp bhejta hoon, yahi number sahi hai?"
+          cue: "Pick the time here; it carries into the wrap-up. Then press b or 2, Demo booked."
+          capture: [demo_at, whatsapp]
+          branches:
+            - {label: "Booked", outcome: DEMO_BOOKED}
+
+  # Objections panel (o). Anchor, pattern disrupt, question. `tag` links a
+  # card to the wrap-up chip, so "Heard it" ticks the chip. `referral: true`
+  # shows the Add a referral button.
+  objection_rule: "Ignore the first knee-jerk objection. Handle two. On the third, get their WhatsApp and end politely."
+  objections:
+    - key: price_ask
+      title: What's the price?
+      tag: PRICE_ASK
+      anchor: "20,000 drawings for 1 lakh, so about 5 rupees a drawing."
+      disrupt: "But check the 5 free ones first."
+      question: "How many a month are you doing?"
+    - key: confidential
+      title: Our drawings are confidential
+      tag: CONFIDENTIAL_DRAWINGS
+      anchor: "Fair."
+      disrupt: "Send 5 old or already-released ones, or mask the title block."
+      question: "Would that work?"
+    - key: have_software
+      title: We already have software
+      tag: ALREADY_HAVE_SOFTWARE
+      anchor: "Which one?"
+      disrupt: "Most tools still leave some of it to do by hand."
+      question: "What does it still make you do by hand?"
+    - key: manual_fine
+      title: We do it manually, it's fine
+      tag: DO_IT_MANUALLY_FINE
+      anchor: "Totally, most do."
+      disrupt: "It works, it just eats time."
+      question: "How many hours a week goes into it?"
+    - key: send_whatsapp
+      title: Send details on WhatsApp
+      tag: SEND_DETAILS_WHATSAPP
+      anchor: "Sending now."
+      disrupt: "So it's useful and not just a brochure..."
+      question: "What kind of parts are the drawings for?"
+    - key: low_volume
+      title: We don't do many
+      tag: LOW_VOLUME
+      referral: true
+      anchor: "Got it."
+      disrupt: "Then it may not be worth it for you, and that's fine."
+      question: "Who do you know that does a lot of these, a customer or a lab you use?"
+    - key: not_interested
+      title: Not interested
+      tag: NOT_INTERESTED
+      anchor: "Of course, you don't know what it is yet."
+      disrupt: "That's why the trial is free and on your own drawings."
+      question: "Who builds the inspection reports at {company} today?"
+    - key: busy
+      title: Busy right now
+      tag: BUSY
+      anchor: "I know, and I'll be quick."
+      disrupt: "Or I call back when it suits you."
+      question: "Later today or tomorrow morning?"
+    - key: too_expensive
+      title: Too expensive
+      tag: TOO_EXPENSIVE
+      anchor: "Compared to what?"
+      disrupt: "If one drawing takes 30 minutes by hand, 5 rupees is less than a minute of that time."
+      question: "What does an hour of your inspector's time cost?"
+    - key: send_email
+      title: Send an email
+      tag: SEND_EMAIL
+      anchor: "Happy to."
+      disrupt: "So it's not one more email you skip..."
+      question: "Should I put the free 5-drawing trial in it, and who else should see it?"
+    - key: boss
+      title: I need to ask my boss
+      tag: NEED_BOSS_APPROVAL
+      anchor: "Makes sense."
+      disrupt: "The trial costs nothing, so you have something to show him."
+      question: "What would he want to see in the result?"
+
+  # Follow-ups. WhatsApp opens wa.me with the text filled in; email opens a
+  # mailto: with subject = their first name. Pawan presses send himself.
+  templates:
+    sample_request:
+      label: Sample request
+      whatsapp: |-
+        Hi {dm_first}, Pawan from PXL Kraft, thanks for the time today.
+
+        For the free trial, please send 5 of your drawings here, PDF or DWG. Any part types you balloon regularly. Old or already-released drawings are fine, or mask the title block.
+
+        We send them back ballooned, and you check the accuracy yourself.
+      subject: "{dm_first}"
+      email: |-
+        Hi {dm_first},
+
+        Thanks for the time on the phone today.
+
+        For the free trial, reply with 5 of your drawings, PDF or DWG. Pick part types you balloon regularly. Old or already-released drawings are fine, or mask the title block.
+
+        We send them back ballooned, and you check the accuracy yourself.
+
+        Pawan
+        PXL Kraft, {website}
+    after_call_intro:
+      label: After the call
+      whatsapp: |-
+        Hi {dm_first}, Pawan from PXL Kraft. Good speaking today. We do AI ballooning for FAI and inspection reports: upload a drawing and every characteristic is numbered in seconds.
+
+        {website}
+      subject: "{dm_first}"
+      email: |-
+        Hi {dm_first},
+
+        Good speaking today. We do AI ballooning for FAI and inspection reports: upload a drawing and every characteristic is numbered in seconds.
+
+        If you want to try it, send 5 drawings and we'll balloon them free.
+
+        Pawan
+        PXL Kraft, {website}
+    sample_delivered:
+      label: Sample delivered
+      whatsapp: |-
+        Hi {dm_first}, your 5 drawings are ballooned and sent back.
+
+        How did the accuracy look?
+      subject: "{dm_first}"
+      email: |-
+        Hi {dm_first},
+
+        Your 5 drawings are ballooned and attached.
+
+        How did the accuracy look?
+
+        Pawan
+        PXL Kraft, {website}
+
+# Follow-ups rail: when a nudge is due.
+followups:
+  sample_not_received_hours: 24
+  delivered_no_feedback_hours: 48
+  interested_no_step_days: 3

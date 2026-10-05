@@ -11,3 +11,16 @@ dnc.csv
 __pycache__/
 *.pyc
 .DS_Store
+
+# Seeded demo database for local UI previews
+.preview/
+.venv/
+.gstack/
+
+# In-app script and objection edits (live next to the database)
+/scripts.json
+/objections.json
+
+# India dialer: the lead lists hold named people's mobiles; never commit them
+/Me
+india-dialer/data/
