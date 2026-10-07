@@ -198,21 +198,27 @@ def daily_cap(entry, today, numbers=DEFAULT_NUMBERS):
     return numbers.get("max_dials_per_number_per_day", 150)
 
 
-def pick_caller_id(lead_phone, lead_state, pool, used_today, today, parked=(), cursor=0, numbers=DEFAULT_NUMBERS):
+def pick_caller_id(lead_phone, lead_state, pool, used_today, today, parked=(), cursor=0, numbers=DEFAULT_NUMBERS,
+                   over_cap=False):
     """Local presence. Returns (entry, reason, next_cursor) or (None, why, cursor).
 
     Order: a number in the lead's area code, else one in the lead's state,
     else round-robin. Parked numbers and numbers at their daily cap (warm-up
     cap included) are never offered, which is the hard stop at 150.
+    over_cap: the agent chose "Dial anyway" on one lead, so a number at its
+    cap (never a parked one, unless every number is parked) may be used.
     """
     if not pool:
         return None, "No caller ID is configured.", cursor
     open_pool = [e for e in pool
                  if e["number"] not in parked and used_today.get(e["number"], 0) < daily_cap(e, today, numbers)]
+    if not open_pool and over_cap:
+        open_pool = [e for e in pool if e["number"] not in parked] or list(pool)
     if not open_pool:
         if all(e["number"] in parked for e in pool):
             return None, "Every caller ID is parked for a low pickup rate. Rest them or add numbers.", cursor
-        return None, "Every caller ID has reached its daily dial cap. The queue is closed until tomorrow.", cursor
+        return None, ("Every caller ID has reached its daily dial cap. The queue is closed until tomorrow; "
+                      "you can still open a lead from the list and dial it anyway."), cursor
 
     code = area_code(lead_phone)
     for entry in open_pool:

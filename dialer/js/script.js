@@ -263,7 +263,13 @@ export function renderTimeline() {
       (e.pain ? '<div class="l2"><b>Pain:</b> ' + esc(e.pain) + "</div>" : "") +
       (tagsOf(e) ? '<div class="l2"><b>Objections:</b> ' + esc(tagsOf(e)) + "</div>" : "") +
       (e.notes ? '<div class="l2">' + esc(e.notes) + "</div>" : "") +
-      (e.recording_sid ? '<div class="l2"><a href="/api/recording/' + esc(e.recording_sid) + '.mp3" target="_blank" rel="noopener">Play recording</a></div>' : "") + "</div></div>";
+      (e.recording_sid ? '<div class="l2"><a href="/api/recording/' + esc(e.recording_sid) + '.mp3" target="_blank" rel="noopener">Play recording</a></div>' : "") +
+      (e.ai_summary ? '<div class="l2"><b>Claude:</b> ' + esc(e.ai_summary) + "</div>" : "") +
+      (e.transcript_status === "done" && e.transcript
+        ? '<details class="transcript"><summary>Transcript</summary><pre>' + esc(e.transcript) + "</pre></details>"
+        : e.transcript_status === "queued" || e.transcript_status === "working" ? '<div class="l2 muted">Transcribing…</div>'
+        : e.transcript_status === "failed" ? '<div class="l2 muted">Transcript failed' + (e.transcript_error ? ": " + esc(e.transcript_error) : "") +
+          ' <button class="btn quiet sm" data-retry-tx="' + e.id + '">Try again</button></div>' : "") + "</div></div>";
   }).join("") || '<p class="muted">First time anyone has called this lead.</p>';
 }
 

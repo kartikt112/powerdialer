@@ -161,6 +161,28 @@ Call Booked, Sales Calls Done, Sales, Sales $, Notes`.
   said `compliance.recording_disclosure` and pressed R. Recording stays off on
   a public server until `DIALER_PASSWORD` is set.
 
+## After the call: transcripts, pipeline, Claude
+
+- **Transcripts.** Every recorded call is sent to Deepgram once Twilio finishes
+  the file, and the text (you and them, in order) shows under the call in the
+  lead's History. The key is `DEEPGRAM_API_KEY` or `DATA_DIR/secrets/deepgram.key`.
+  If you show up as "Them", set `dialer.transcripts.agent_channel: 1`.
+- **Pipeline.** Each lead can have a stage (Interested, Invite sent, Signed up,
+  Using it, Call booked, Showed, No-show, Sold, Lost), a follow-up date and a
+  note, set on the lead card. Resonated and Booked outcomes, shows, no-shows
+  and sales move it on their own. The Pipeline tab lists them by stage, with
+  the follow-ups that are due. Every change lands on the lead's timeline.
+- **Copy for Claude** (History) puts the lead, its calls, transcripts and
+  timeline on the clipboard for a Claude chat.
+- **The Claude connector.** `dialer/mcp_server.py` is an MCP server (standard
+  library only) that lets Claude read new calls, transcripts, the pipeline and
+  follow-ups due, and set stages, follow-ups and contact details, log drafts and
+  invite links, and mark calls processed. It never dials or sends. Add it with
+  `claude mcp add dialer --scope user -- python3 /path/to/dialer/mcp_server.py`;
+  it reads `DIALER_URL` and the password from `DIALER_PASSWORD` or
+  `~/.pxl-dialer-password`. Transcripts and the connector's endpoints stay off
+  on a public server until `DIALER_PASSWORD` is set.
+
 ## Deploying on Railway
 
 The `dialer` service builds from this repo's `main` with the Dockerfile. Set

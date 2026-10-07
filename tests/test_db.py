@@ -237,3 +237,45 @@ class Sessions(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DialAnyway(Base):
+    """The agent can choose to call a lead again: the same-day rule and the
+    caller ID cap give way, do-not-call and calling hours never do."""
+
+    def test_same_day_redial_when_the_agent_insists(self):
+        self.lead("+19372040101", "Ohio Shop", "America/New_York", -4)
+        lead, _ = db.checkout("pawan")
+        self.save(lead, "NO_ANSWER")
+        self.clock = utc(22, "15:00")
+        _, reason = db.checkout_specific(lead["phone"], "pawan")
+        self.assertIn("Already tried today", reason)
+        again, reason = db.checkout_specific(lead["phone"], "pawan", force=True)
+        self.assertIsNone(reason)
+        self.assertEqual(again["company"], "Ohio Shop")
+
+    def test_over_the_cap_when_the_agent_insists(self):
+        self.lead("+19372040101", "Ohio Shop", "America/New_York", -4)
+        with db.connect() as con:
+            for number in ("+19375550001", "+12535550002"):
+                con.executemany("INSERT INTO dispositions (phone, disposition, at, number_used) VALUES (?,?,?,?)",
+                                [(f"+1555{i:07d}", "NO_ANSWER", db.iso(self.clock), number) for i in range(150)])
+        _, reason = db.checkout_specific("+19372040101", "pawan")
+        self.assertIn("daily dial cap", reason)
+        self.assertTrue(any(k in reason for k in db.OVERRIDABLE))
+        lead, reason = db.checkout_specific("+19372040101", "pawan", force=True)
+        self.assertIsNone(reason)
+        self.assertEqual(lead["_caller_id"], "+19375550001")          # Ohio area code still wins
+        self.assertIsNone(db.checkout("pawan")[0])                    # the automatic queue stays closed
+
+    def test_never_past_do_not_call_or_calling_hours(self):
+        self.lead("+19372040101", "Ohio Shop", "America/New_York", -4)
+        with db.connect() as con:
+            con.execute("INSERT INTO dnc VALUES ('+19372040101','asked','x','pawan')")
+        _, reason = db.checkout_specific("+19372040101", "pawan", force=True)
+        self.assertIn("do-not-call", reason)
+        self.assertFalse(any(k in reason for k in db.OVERRIDABLE))
+        self.lead("+19372040102", "Late Shop", "America/New_York", -4)
+        self.clock = utc(23, "02:00")                                 # 10pm ET
+        _, reason = db.checkout_specific("+19372040102", "pawan", force=True)
+        self.assertIn("Outside calling hours", reason)

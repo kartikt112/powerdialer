@@ -178,6 +178,12 @@ dialer:
   session:
     target_dials: 100
     target_minutes: 90
+  # Transcripts: every recorded call goes to Deepgram (key in DEEPGRAM_API_KEY or
+  # DATA_DIR/secrets/deepgram.key). agent_channel is the recording channel that
+  # is you; flip to 1 if the transcript labels you as "Them".
+  transcripts:
+    agent_channel: 0
+    agent_name: Pawan
   # Dials a day the target strip aims for, when a campaign doesn't set its own
   # (each campaign can, under Campaigns > Edit).
   daily_target: 150

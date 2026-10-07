@@ -303,6 +303,7 @@ function renderInbox() {
 
 /* --------------------------------------------------------------- wiring -- */
 
+export function registerTab(name, fn) { REFRESH[name] = fn; }
 const REFRESH = { queue: refreshQueue, callbacks: refreshCallbacks, bookings: refreshBookings, calls: refreshCalls,
                   inbox: refreshInbox, numbers: refreshNumbers };
 

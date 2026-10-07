@@ -19,6 +19,7 @@ import { selectTab, refreshQueue, refreshCallbacks, refreshCalls, refreshInbox, 
 import { agentPicker, manualModal, shortcutsModal, logModal, settingsModal, applyTheme } from "./modals.js";
 import { wireCampaigns, loadListModal, manageModal, deleteLeads, refreshTarget } from "./campaigns.js";
 import { openAnalytics } from "./analytics.js";
+import { wirePipeline } from "./pipeline.js";
 
 let carrier = simulatorCarrier();
 let activeCall = null, incoming = null;
@@ -427,6 +428,13 @@ function openLead(phone, route, extra) {
   cancelCountdown();
   const release = S.cur && S.state === "READY" && S.cur.phone !== phone ? api("/api/release", { phone: S.cur.phone }) : Promise.resolve();
   return release.then(() => api(route || "/api/checkout", Object.assign({ phone, agent: S.agent }, extra || {}))).then((d) => {
+    if (d.error && d.can_force) {
+      toast("warn", esc(d.error) + " You can still call them.", {
+        ms: 12000, actions: [{ html: "Dial anyway", run: () => openLead(phone, route, Object.assign({}, extra || {}, { force: true })) }]
+      });
+      if (!S.cur) nextLead();
+      return false;
+    }
     if (d.error || !d.lead) { toast("error", esc(d.error || "Could not open that lead.")); if (!S.cur) nextLead(); return false; }
     renderStats(d.stats);
     loadLead(d.lead, { handPicked: true });
@@ -895,6 +903,7 @@ function boot() {
     say("Signed in as " + esc(S.agentName) + " (" + esc(S.agent) + ")");
     emit("cfg", S.cfg);
     wireCampaigns();
+    wirePipeline();
     if (S.cfg.live) api(withAgent("/api/token")).then((d) => { if (d && d.token) attachCarrier(d.token); else simMode(); }).catch(simMode);
     else simMode();
     nextLead();

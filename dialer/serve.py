@@ -40,7 +40,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import funnel
+import pipeline
 import policy
+import transcribe
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -48,6 +50,8 @@ OUT = os.path.join(ROOT, "out")
 DATA_DIR = os.environ.get("DATA_DIR")
 
 CONFIG = {"caller_id": "+1 917 555 0142"}
+
+HOST_BOUND = "127.0.0.1"          # set from --host at start; the private gate reads it
 
 VM_DROP_TEXT = os.environ.get("VM_DROP_TEXT",
     "Hi, it's Pawan. Sorry I missed you. I was calling about the PPAP paperwork "
@@ -708,6 +712,8 @@ def lead_payload(lead):
         "gatekeeper_name": lead.get("gatekeeper_name") or "",
         "lead_notes": lead.get("lead_notes") or "",
         "rank": lead["rank"], "attempts": lead["attempts"],
+        "stage": lead.get("stage") or "", "follow_up_at": lead.get("follow_up_at") or "",
+        "follow_up_note": lead.get("follow_up_note") or "",
         "tz_offset": offset, "tz_name": lead.get("tz_name") or "",
         "last_disposition": lead["last_disposition"],
         "callback_at": lead["callback_at"],
@@ -795,6 +801,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------- GET --
 
+    def _private_ok(self):
+        """Transcripts and the agent API only on a server that has a password,
+        or one that only this machine can reach."""
+        return bool(os.environ.get("DIALER_PASSWORD")) or HOST_BOUND in ("127.0.0.1", "localhost", "::1")
+
+    def _private_refused(self):
+        return self._json({"error": "Set DIALER_PASSWORD on this server first: transcripts and the agent API "
+                                    "stay off while anyone with the link can open the dialer."}, 403)
+
     def _use_campaign(self, data=None):
         """Which campaign this request is about: the X-Campaign header the
         cockpit sends on every call, ?campaign= on download links, or none (all)."""
@@ -849,6 +864,31 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/campaigns":
             return self._json({"campaigns": db.campaigns_list(), "current": db.current_campaign()})
+
+        if route == "/api/pipeline":
+            stage = (query.get("stage") or [""])[0]
+            return self._json(pipeline.board(stage or None))
+
+        if route in ("/api/lead/detail", "/api/agent/lead"):
+            if not self._private_ok():
+                return self._private_refused()
+            detail = pipeline.lead_detail(clean_phone((query.get("phone") or [""])[0]))
+            return self._json({"lead": detail}) if detail else self._json({"error": "no such lead"}, 404)
+
+        if route == "/api/agent/inbox":
+            if not self._private_ok():
+                return self._private_refused()
+            return self._json(pipeline.inbox(int((query.get("limit") or ["20"])[0] or 20)))
+
+        if route == "/api/agent/followups":
+            if not self._private_ok():
+                return self._private_refused()
+            return self._json({"leads": pipeline.followups_due()})
+
+        if route == "/api/agent/pipeline":
+            if not self._private_ok():
+                return self._private_refused()
+            return self._json(pipeline.board((query.get("stage") or [""])[0] or None))
 
         if route == "/api/target":
             return self._json(db.target_status())
@@ -1005,6 +1045,9 @@ class Handler(BaseHTTPRequestHandler):
             dispo_id = db.disposition(phone, data.get("company", ""), code,
                                       (data.get("notes") or "")[:2000], self._agent(data),
                                       int(data.get("duration") or 0), callback_at=when, extra=extra)
+            pipeline.after_call(phone, code, when, by=self._agent(data))
+            if extra.get("recording_sid"):
+                transcribe.enqueue(dispo_id)
             webhook = None
             if extra.get("booked_for"):
                 webhook = fire_booking_webhook(dispo_id, lead, extra["booked_for"], data.get("booked_for_local"),
@@ -1027,10 +1070,13 @@ class Handler(BaseHTTPRequestHandler):
             if not phone:
                 return self._json({"error": "Enter a 10-digit US or Canadian number."}, 400)
             tz, tz_name = number_tz(phone) if route == "/api/manual" else (None, "")
+            force = bool(data.get("force"))
             lead, reason = db.checkout_specific(phone, self._agent(data), tz_offset=tz, tz_name=tz_name,
-                                                returning=bool(data.get("returning")))
+                                                returning=bool(data.get("returning")), force=force)
             if reason:
-                return self._json({"error": reason}, 409)
+                return self._json({"error": reason, "can_force": any(k in reason for k in db.OVERRIDABLE)}, 409)
+            if force:
+                print(f"  OVERRIDE  {phone} dialed again by {self._agent(data)} (same-day rule or cap lifted)")
             return self._json({"ok": True, "lead": lead_payload(lead),
                                "tz_known": route != "/api/manual" or tz is not None,
                                "stats": db.stats(self._agent(data))})
@@ -1067,6 +1113,41 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/session/end":
             return self._json(dict(db.session_end(int(data.get("id") or 0), data.get("active_seconds")), ok=True))
+
+        if route in ("/api/pipeline/stage", "/api/agent/stage"):
+            phone = clean_phone(data.get("phone", ""))
+            stage = str(data.get("stage") or "")
+            if stage and stage not in pipeline.LABEL:
+                return self._json({"error": "Unknown stage. Use one of: " + ", ".join(pipeline.LABEL)}, 400)
+            by = "claude" if route.startswith("/api/agent") else self._agent(data)
+            moved = pipeline.set_stage(phone, stage, by=by, note=str(data.get("note") or "")[:300])
+            return self._json({"ok": True, "moved": moved, "lead": pipeline.lead_detail(phone, calls=0, n_events=10)})
+
+        if route in ("/api/pipeline/follow-up", "/api/agent/follow-up"):
+            phone = clean_phone(data.get("phone", ""))
+            when = clean_when(data.get("at")) if data.get("at") else None
+            if data.get("at") and not when:
+                return self._json({"error": "at must be 'YYYY-MM-DD HH:MM' in UTC"}, 400)
+            by = "claude" if route.startswith("/api/agent") else self._agent(data)
+            pipeline.set_follow_up(phone, when, str(data.get("note") or ""), by)
+            return self._json({"ok": True})
+
+        if route in ("/api/agent/details", "/api/agent/event", "/api/agent/processed"):
+            if not self._private_ok():
+                return self._private_refused()
+            if route == "/api/agent/details":
+                pipeline.update_lead(clean_phone(data.get("phone", "")), data.get("fields") or {}, "claude")
+            elif route == "/api/agent/event":
+                pipeline.add_event(clean_phone(data.get("phone", "")), str(data.get("kind") or "note")[:30],
+                                   str(data.get("text") or ""), "claude")
+            elif not pipeline.mark_processed(int(data.get("id") or 0), str(data.get("summary") or "")):
+                return self._json({"error": "no such call"}, 404)
+            return self._json({"ok": True})
+
+        if route == "/api/transcript/retry":
+            if not transcribe.enqueue(int(data.get("id") or 0)):
+                return self._json({"error": "No recording on that call, or transcripts are off."}, 400)
+            return self._json({"ok": True})
 
         if route == "/api/record/start":
             sid = str(data.get("call_sid") or "")
@@ -1120,6 +1201,10 @@ class Handler(BaseHTTPRequestHandler):
                                       data.get("sale"), data.get("sale_amount"))
             if error:
                 return self._json({"error": error}, 400)
+            with db.connect() as con:
+                row = con.execute("SELECT phone FROM dispositions WHERE id=?", (int(data.get("id") or 0),)).fetchone()
+            if row:
+                pipeline.after_followthrough(row["phone"], data.get("show_status"), data.get("sale"))
             return self._json({"ok": True, "bookings": db.bookings(),
                                "stats": db.stats(self._agent(data), labels=objection_labels())})
 
@@ -1276,10 +1361,19 @@ def main():
     print(f"  dnc       internal list + " + (f"scrub file {scrub} ({len(db.scrub_numbers())} numbers)" if scrub else "no national scrub file")
           + f"; mobiles {'ALLOWED' if db.ALLOW_MOBILE else 'blocked'}")
     print(f"  carrier   {'twilio credentials found: real calls' if not simulator else 'not configured: simulator mode (see TWILIO.md)'}")
+    global HOST_BOUND
+    HOST_BOUND = args.host
     print(f"  auth      {'basic auth on' if os.environ.get('DIALER_PASSWORD') else 'OFF: local use only'}")
     if DIALER.get("recording") and args.host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("DIALER_PASSWORD"):
         DIALER["recording"] = False      # never record (or serve recordings) on a public server anyone can open
         print("  recording OFF: this server is public and DIALER_PASSWORD is not set. Set it to turn recording on.")
+    if DIALER.get("recording") and os.environ.get("TWILIO_ACCOUNT_SID"):
+        tcfg = DIALER.get("transcripts") or {}
+        agent_name = tcfg.get("agent_name") or ((DIALER.get("agents") or [{}])[0].get("name")) or "Pawan"
+        transcribe.start(lambda sid: twilio_rest(f"Recordings/{sid}.json"),
+                         lambda sid: twilio_rest(f"Recordings/{sid}.mp3"),
+                         tcfg.get("agent_channel", 0), agent_name)
+    print(f"  transcripts {'Deepgram, after every recorded call' if transcribe.enabled() else 'off (needs recording on, Twilio and a Deepgram key)'}")
     print(f"  serving   {args.host}:{args.port}\n")
 
     if not args.no_open and args.host in ("127.0.0.1", "localhost"):

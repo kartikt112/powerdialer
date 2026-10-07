@@ -192,6 +192,13 @@ CREATE TABLE IF NOT EXISTS campaign_leads (
   PRIMARY KEY (campaign_id, phone)
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_leads_phone ON campaign_leads(phone);
+
+-- Pipeline timeline: stage changes, follow-ups, transcripts processed, email
+-- drafts and invite links logged by Claude or by hand.
+CREATE TABLE IF NOT EXISTS lead_events (
+  id INTEGER PRIMARY KEY, phone TEXT NOT NULL, at TEXT, kind TEXT, text TEXT DEFAULT '', by TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_lead_events_phone ON lead_events(phone, at);
 """
 
 # Columns added after the first deploy; applied idempotently by init().
@@ -242,6 +249,16 @@ MIGRATIONS = [
     ("dispositions", "recording_sid", "TEXT DEFAULT ''"),
     ("leads", "deleted_at", "TEXT"),
     ("leads", "prev_status", "TEXT"),
+    # Pipeline and the call agent
+    ("leads", "stage", "TEXT DEFAULT ''"),
+    ("leads", "stage_at", "TEXT"),
+    ("leads", "follow_up_at", "TEXT"),
+    ("leads", "follow_up_note", "TEXT DEFAULT ''"),
+    ("dispositions", "transcript", "TEXT"),
+    ("dispositions", "transcript_status", "TEXT DEFAULT ''"),   # queued | working | done | failed | ''
+    ("dispositions", "transcript_error", "TEXT DEFAULT ''"),
+    ("dispositions", "ai_summary", "TEXT DEFAULT ''"),
+    ("dispositions", "processed_at", "TEXT"),
 ]
 
 
@@ -657,13 +674,13 @@ def _parked(con):
     return {r["number"] for r in con.execute("SELECT number FROM number_state WHERE parked=1")}
 
 
-def assign_caller_id(con, lead):
+def assign_caller_id(con, lead, over_cap=False):
     """(number, reason) for this lead, or (None, why-not). Advances the
     round-robin cursor only when round robin actually chose."""
     global _rr_cursor
     entry, reason, _rr_cursor = policy.pick_caller_id(
         lead["phone"], lead["state"], _effective_pool(con), _usage(con), _today_local(),
-        _parked(con), _rr_cursor, NUMBERS)
+        _parked(con), _rr_cursor, NUMBERS, over_cap=over_cap)
     return (entry["number"] if entry else None), reason
 
 
@@ -772,8 +789,8 @@ def window_status(at=None):
             "next_local": nxt[3].strftime("%a %-I:%M%p").replace("AM", "am").replace("PM", "pm") if nxt else None}
 
 
-def _with_caller_id(con, lead):
-    number, reason = assign_caller_id(con, lead)
+def _with_caller_id(con, lead, over_cap=False):
+    number, reason = assign_caller_id(con, lead, over_cap)
     if number is None:
         return None, reason
     lead = dict(lead)
@@ -855,7 +872,8 @@ def history(phone, limit=20):
     with connect() as con:
         return [dict(r) for r in con.execute(
             "SELECT id, disposition, notes, agent, duration, at, objections, pain, booked_for, "
-            "show_status, sale, attempt_no, script_version, recording_sid FROM dispositions "
+            "show_status, sale, attempt_no, script_version, recording_sid, transcript, transcript_status, "
+            "transcript_error, ai_summary FROM dispositions "
             "WHERE phone=? ORDER BY at DESC, id DESC LIMIT ?", (phone, limit))]
 
 
@@ -1024,7 +1042,12 @@ def is_dnc(phone):
         return con.execute("SELECT 1 FROM dnc WHERE phone=?", (phone,)).fetchone() is not None
 
 
-def checkout_specific(phone, agent, tz_offset=None, tz_name="", returning=False):
+# Refusals the agent may override with "Dial anyway" on a lead they picked.
+# Do-not-call, the mobile block and calling hours are never overridable.
+OVERRIDABLE = ("Already tried today", "daily dial cap")
+
+
+def checkout_specific(phone, agent, tz_offset=None, tz_name="", returning=False, force=False):
     """Agent picked a lead by hand (queue click, callback, inbox, typed number).
     Same guard rails as the automatic path: DNC, mobile block, a caller ID with
     room under its cap, the 08:00 to 18:00 weekday limit on the prospect's
@@ -1068,12 +1091,12 @@ def checkout_specific(phone, agent, tz_offset=None, tz_name="", returning=False)
             return None, f"{row['checked_out_by']} has that lead open right now."
         if not in_hard(row, t):
             return None, "Outside calling hours on their clock (weekdays, 8am to 6pm their time)."
-        if (not returning and row["last_called_at"] and not row["callback_at"]
+        if (not returning and not force and row["last_called_at"] and not row["callback_at"]
                 and row["last_disposition"] not in CONNECTED
                 and policy.same_local_day(to_local(row, datetime.fromisoformat(row["last_called_at"])), to_local(row, t))):
             return None, "Already tried today with no answer. Same-day redials get numbers labelled as spam."
 
-        lead, why_not = _with_caller_id(con, row)
+        lead, why_not = _with_caller_id(con, row, over_cap=force)
         if lead is None:
             return None, why_not
         con.execute(

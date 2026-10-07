@@ -89,6 +89,7 @@
     <nav class="railnav" role="tablist" aria-orientation="vertical">
       <button class="tab" role="tab" data-tab="queue" aria-selected="true"><span data-ic="list"></span><span class="tl">Queue</span><span class="count" id="n-queue" hidden></span></button>
       <button class="tab" role="tab" data-tab="callbacks" aria-selected="false"><span data-ic="clock"></span><span class="tl">Callbacks</span><span class="count" id="n-cb"></span></button>
+      <button class="tab" role="tab" data-tab="pipeline" aria-selected="false"><span data-ic="target"></span><span class="tl">Pipeline</span><span class="count" id="n-pipe"></span></button>
       <button class="tab" role="tab" data-tab="bookings" aria-selected="false"><span data-ic="calendar"></span><span class="tl">Bookings</span><span class="count" id="n-book"></span></button>
       <button class="tab" role="tab" data-tab="calls" aria-selected="false"><span data-ic="activity"></span><span class="tl">Calls</span><span class="count" id="n-calls" hidden></span></button>
       <button class="tab" role="tab" data-tab="inbox" aria-selected="false"><span data-ic="inbox"></span><span class="tl">Inbox</span><span class="count" id="n-inbox"></span></button>
@@ -118,6 +119,12 @@
       <section class="panel" id="p-callbacks" role="tabpanel" hidden>
         <div class="panel-head"><h2>Callbacks</h2></div>
         <div class="list" id="l-callbacks"></div>
+      </section>
+
+      <section class="panel" id="p-pipeline" role="tabpanel" hidden>
+        <div class="panel-head"><h2>Pipeline</h2></div>
+        <div class="stage-filter" id="pipe-stages"></div>
+        <div class="list" id="l-pipeline"></div>
       </section>
 
       <section class="panel" id="p-bookings" role="tabpanel" hidden>
@@ -159,6 +166,15 @@
             <span class="phone" id="c-phone"></span>
             <button class="btn quiet sm" id="b-copy" title="Copy number (c)">Copy</button>
             <button class="btn quiet sm" id="b-del-lead" title="Take this lead off the list">Remove lead</button>
+          </div>
+
+          <div class="pipe-row" id="pipe-row">
+            <label class="lbl" for="pipe-stage">Stage</label>
+            <select class="field" id="pipe-stage"></select>
+            <label class="lbl" for="pipe-fu">Follow up</label>
+            <input class="field" type="datetime-local" id="pipe-fu" aria-label="Follow-up date, your local time">
+            <input class="field" id="pipe-note" maxlength="300" placeholder="What to follow up about">
+            <button class="btn sm" id="pipe-save">Save</button>
           </div>
 
           <div class="facts">
@@ -284,8 +300,10 @@
         </section>
 
         <section>
-          <div class="sect-h"><h2>History <span class="muted" id="h-count"></span></h2></div>
+          <div class="sect-h"><h2>History <span class="muted" id="h-count"></span></h2>
+            <span class="sect-tools"><button class="btn quiet sm" id="b-copy-claude" title="Lead, calls, transcripts and timeline as text, ready to paste into Claude">Copy for Claude</button></span></div>
           <div class="timeline" id="timeline"></div>
+          <div class="lead-events" id="lead-events"></div>
         </section>
       </aside>
     </div>
